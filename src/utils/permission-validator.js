@@ -1,6 +1,6 @@
 const logger = require('./logger');
-const AuditLogger = require('./auditLogger');
-const SecurityValidator = require('./securityValidator');
+const AuditLogger = require('./audit-logger');
+const SecurityValidator = require('./security-validator');
 
 /**
  * Permission levels hierarchy

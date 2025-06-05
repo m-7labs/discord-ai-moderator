@@ -1,885 +1,485 @@
-const mongoose = require('mongoose');
-const mongoSanitize = require('express-mongo-sanitize');
+const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 
-// Import new security modules
-const SecurityValidator = require('./utils/securityValidator');
-const AuditLogger = require('./utils/auditLogger');
-const PrivacyManager = require('./utils/privacyManager');
+let db = null;
 
-// Database setup function with enhanced security
-async function setupDatabase() {
-  const dbType = process.env.DB_TYPE || 'MONGODB';
-  
-  if (dbType === 'MONGODB') {
-    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/discord-ai-moderator';
-    
-    // Enhanced URI validation
-    if (!mongoUri.match(/^mongodb(\+srv)?:\/\/.+/)) {
-      throw new Error('Invalid MongoDB URI format');
-    }
-    
-    // Security: Validate that URI doesn't contain suspicious patterns
-    const suspiciousPatterns = [
-      /javascript:/i,
-      /data:/i,
-      /vbscript:/i,
-      /file:/i,
-      /<script/i
-    ];
-    
-    if (suspiciousPatterns.some(pattern => pattern.test(mongoUri))) {
-      throw new Error('Potentially malicious MongoDB URI detected');
-    }
-    
-    mongoose.set('strictQuery', true);
-    mongoose.set('sanitizeFilter', true); // Additional MongoDB injection protection
-    
-    // Enhanced connection options with security focus
-    const connectionOptions = {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 5,
-      maxIdleTimeMS: 30000,
-      family: 4,
-      retryWrites: true,
-      retryReads: true,
-      compressors: ['zlib'],
-      authSource: 'admin',
-      // Security enhancements
-      ssl: process.env.MONGODB_SSL === 'true',
-      sslValidate: process.env.MONGODB_SSL_VALIDATE !== 'false',
-      readPreference: 'secondary', // Distribute read load
-      readConcern: { level: 'majority' }, // Ensure consistent reads
-      writeConcern: { w: 'majority', j: true }, // Ensure durable writes
-    };
-    
-    // Add SSL certificate if provided
-    if (process.env.MONGODB_CA_CERT) {
-      connectionOptions.sslCA = fs.readFileSync(process.env.MONGODB_CA_CERT);
-    }
-    
-    // Connection event listeners with audit logging
-    mongoose.connection.on('error', async (error) => {
-      await AuditLogger.logSecurityEvent({
-        type: 'DATABASE_CONNECTION_ERROR',
-        error: error.message,
-        timestamp: Date.now()
-      });
-      
-      errorManager.handleError(error, 'database', {
-        operation: 'connection',
-        uri: mongoUri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@')
-      });
-    });
-    
-    mongoose.connection.on('disconnected', async () => {
-      logger.warn('MongoDB disconnected, attempting to reconnect');
-      await AuditLogger.logSecurityEvent({
-        type: 'DATABASE_DISCONNECTED',
-        timestamp: Date.now()
-      });
-    });
-    
-    mongoose.connection.on('reconnected', async () => {
-      logger.info('MongoDB reconnected successfully');
-      await AuditLogger.logSecurityEvent({
-        type: 'DATABASE_RECONNECTED',
-        timestamp: Date.now()
-      });
-    });
-    
+// Initialize SQLite database
+function setupDatabase() {
+  return new Promise((resolve, reject) => {
     try {
-      await mongoose.connect(mongoUri, connectionOptions);
-      logger.info('Connected to MongoDB with enhanced security settings');
+      const dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'discord-ai-mod.db');
       
-      // Log successful connection
-      await AuditLogger.logSecurityEvent({
-        type: 'DATABASE_CONNECTED',
-        timestamp: Date.now(),
-        connectionOptions: {
-          ssl: connectionOptions.ssl,
-          readConcern: connectionOptions.readConcern.level,
-          writeConcern: connectionOptions.writeConcern.w
+      // Ensure data directory exists
+      const dataDir = path.dirname(dbPath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+
+      // Initialize database connection
+      db = new sqlite3.Database(dbPath, (err) => {
+        if (err) {
+          logger.error('Failed to connect to SQLite database', { error: err.message });
+          reject(err);
+          return;
         }
+
+        // Enable WAL mode
+        db.run("PRAGMA journal_mode = WAL");
+        db.run("PRAGMA synchronous = NORMAL");
+        db.run("PRAGMA cache_size = 10000");
+        db.run("PRAGMA temp_store = memory");
+
+        // Create tables
+        createTables(() => {
+          logger.info('SQLite database initialized successfully', { path: dbPath });
+          resolve({ success: true, path: dbPath });
+        });
       });
-      
     } catch (error) {
-      await AuditLogger.logSecurityEvent({
-        type: 'DATABASE_CONNECTION_FAILED',
-        error: error.message,
-        timestamp: Date.now()
-      });
-      
-      const result = await errorManager.handleError(error, 'database', {
-        operation: 'connect',
-        uri: mongoUri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@'),
-        retryFunction: async () => {
-          return mongoose.connect(mongoUri, connectionOptions);
-        }
-      });
-      
-      if (!result || !result.success) {
-        logger.error('Failed to connect to MongoDB after retries, application may not function correctly');
+      logger.error('Failed to initialize SQLite database', { error: error.message });
+      reject(error);
+    }
+  });
+}
+
+// Create database tables
+function createTables(callback) {
+  const tables = [
+    // Server Configuration Table
+    `CREATE TABLE IF NOT EXISTS server_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id TEXT NOT NULL UNIQUE,
+      enabled BOOLEAN DEFAULT 1,
+      channels TEXT,
+      rules TEXT,
+      strictness INTEGER DEFAULT 5,
+      custom_keywords TEXT,
+      exempt_roles TEXT,
+      moderator_roles TEXT,
+      auto_action BOOLEAN DEFAULT 0,
+      action_threshold INTEGER DEFAULT 3,
+      notification_channel TEXT,
+      log_channel TEXT,
+      data_hash TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT valid_strictness CHECK (strictness >= 1 AND strictness <= 10)
+    )`,
+
+    // User Data Table
+    `CREATE TABLE IF NOT EXISTS user_data (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      is_exempt BOOLEAN DEFAULT 0,
+      exempt_until DATETIME,
+      joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      recent_violations INTEGER DEFAULT 0,
+      total_violations INTEGER DEFAULT 0,
+      last_violation_date DATETIME,
+      is_anonymized BOOLEAN DEFAULT 0,
+      anonymized_at DATETIME,
+      data_retention_expiry DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, server_id)
+    )`,
+
+    // Violation Logs Table
+    `CREATE TABLE IF NOT EXISTS violation_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      content TEXT,
+      content_hash TEXT,
+      is_violation BOOLEAN DEFAULT 0,
+      category TEXT,
+      severity TEXT,
+      confidence_score REAL,
+      explanation TEXT,
+      suggested_action TEXT,
+      action_taken TEXT,
+      human_reviewed BOOLEAN DEFAULT 0,
+      reviewer_id TEXT,
+      review_notes TEXT,
+      model_used TEXT,
+      provider TEXT,
+      tokens_used INTEGER,
+      processing_time_ms INTEGER,
+      ip_address_hash TEXT,
+      session_id TEXT,
+      request_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT valid_confidence CHECK (confidence_score >= 0 AND confidence_score <= 1),
+      CONSTRAINT valid_provider CHECK (provider IN ('ANTHROPIC', 'OPENROUTER') OR provider IS NULL),
+      CONSTRAINT valid_severity CHECK (severity IN ('Low', 'Moderate', 'Severe') OR severity IS NULL)
+    )`
+  ];
+
+  const indexes = [
+    'CREATE INDEX IF NOT EXISTS idx_server_configs_server_id ON server_configs(server_id)',
+    'CREATE INDEX IF NOT EXISTS idx_user_data_server_user ON user_data(server_id, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_user_data_server_violations ON user_data(server_id, total_violations DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_violation_logs_server_created ON violation_logs(server_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_violation_logs_user_created ON violation_logs(user_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_violation_logs_server_violation ON violation_logs(server_id, is_violation, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_violation_logs_content_hash ON violation_logs(content_hash)',
+    'CREATE INDEX IF NOT EXISTS idx_violation_logs_request_id ON violation_logs(request_id)'
+  ];
+
+  let completed = 0;
+  const total = tables.length + indexes.length;
+
+  // Create tables first
+  tables.forEach(sql => {
+    db.run(sql, (err) => {
+      if (err) {
+        logger.error('Failed to create table', { error: err.message, sql });
       }
-    }
-  } else if (dbType === 'SQLITE') {
-    const dataDir = path.join(__dirname, '..', 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true, mode: 0o750 });
-    }
-    
-    logger.info('Using SQLite database');
-    await AuditLogger.logSecurityEvent({
-      type: 'DATABASE_SQLITE_INITIALIZED',
-      timestamp: Date.now()
+      completed++;
+      if (completed === total) {
+        logger.info('Database tables and indexes created successfully');
+        callback();
+      }
     });
-  } else {
-    throw new Error(`Unknown database type: ${dbType}`);
-  }
-}
+  });
 
-// Enhanced input validation and sanitization
-function sanitizeInput(input) {
-  if (typeof input === 'string') {
-    // Remove potentially dangerous characters and patterns
-    const cleaned = input
-      .trim()
-      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Control characters
-      .replace(/\$where/gi, '') // MongoDB $where injection
-      .replace(/\$regex/gi, '') // MongoDB regex injection
-      .substring(0, 10000); // Length limit
-    
-    return mongoSanitize.sanitize(cleaned);
-  }
-  return mongoSanitize.sanitize(input);
-}
-
-function validateObjectId(id) {
-  try {
-    return mongoose.Types.ObjectId.isValid(id) && /^[a-f\d]{24}$/i.test(id);
-  } catch {
-    return false;
-  }
-}
-
-function validateServerId(serverId) {
-  return SecurityValidator.validateDiscordId(serverId, 'server');
-}
-
-function validateUserId(userId) {
-  return SecurityValidator.validateDiscordId(userId, 'user');
-}
-
-function validateChannelId(channelId) {
-  return SecurityValidator.validateDiscordId(channelId, 'channel');
-}
-
-// Enhanced Server Configuration Schema
-const ServerConfigSchema = new mongoose.Schema({
-  serverId: { 
-    type: String, 
-    required: true, 
-    unique: true,
-    validate: {
-      validator: validateServerId,
-      message: 'Invalid server ID format'
-    },
-    index: true
-  },
-  enabled: { type: Boolean, default: true },
-  channels: [{ 
-    type: String,
-    validate: {
-      validator: validateChannelId,
-      message: 'Invalid channel ID format'
-    }
-  }],
-  rules: { 
-    type: String, 
-    default: 'Be respectful to others.',
-    maxlength: [5000, 'Rules cannot exceed 5000 characters'],
-    validate: {
-      validator: function(v) {
-        return v && v.trim().length > 0;
-      },
-      message: 'Rules cannot be empty'
-    }
-  },
-  strictness: { 
-    type: String, 
-    enum: ['low', 'medium', 'high'], 
-    default: 'medium' 
-  },
-  notifications: {
-    channel: { 
-      type: String, 
-      default: null,
-      validate: {
-        validator: function(v) {
-          return v === null || validateChannelId(v);
-        },
-        message: 'Invalid notification channel ID format'
+  // Then create indexes
+  indexes.forEach(sql => {
+    db.run(sql, (err) => {
+      if (err) {
+        logger.error('Failed to create index', { error: err.message, sql });
       }
-    },
-    sendAlerts: { type: Boolean, default: true }
-  },
-  // Enhanced security fields
-  encryptedData: { type: String }, // For storing encrypted sensitive data
-  dataHash: { type: String }, // For integrity verification
-  lastModifiedBy: { type: String }, // Audit trail
-  createdAt: { type: Date, default: Date.now, index: true },
-  updatedAt: { type: Date, default: Date.now }
-});
+      completed++;
+      if (completed === total) {
+        logger.info('Database tables and indexes created successfully');
+        callback();
+      }
+    });
+  });
+}
 
-// Pre-save middleware for encryption and integrity
-ServerConfigSchema.pre('save', async function(next) {
-  if (this.isModified('rules')) {
-    // Create integrity hash
-    this.dataHash = crypto.createHash('sha256')
-      .update(JSON.stringify({
-        rules: this.rules,
-        strictness: this.strictness,
-        enabled: this.enabled
-      }))
-      .digest('hex');
-  }
-  
-  this.updatedAt = new Date();
-  next();
-});
-
-// Enhanced User Data Schema with privacy features
-const UserDataSchema = new mongoose.Schema({
-  userId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: validateUserId,
-      message: 'Invalid user ID format'
-    }
-  },
-  serverId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: validateServerId,
-      message: 'Invalid server ID format'
-    }
-  },
-  isExempt: { type: Boolean, default: false },
-  exemptUntil: { type: Date, default: null },
-  joinedAt: { type: Date, default: Date.now },
-  recentViolations: { 
-    type: Number, 
-    default: 0,
-    min: [0, 'Recent violations cannot be negative'],
-    max: [1000, 'Recent violations limit exceeded']
-  },
-  totalViolations: { 
-    type: Number, 
-    default: 0,
-    min: [0, 'Total violations cannot be negative'],
-    max: [10000, 'Total violations limit exceeded']
-  },
-  lastActionTaken: { type: Date },
-  canPostInvites: { type: Boolean, default: false },
-  // Privacy and security fields
-  isAnonymized: { type: Boolean, default: false },
-  anonymizedAt: { type: Date },
-  consentStatus: { 
-    type: String, 
-    enum: ['pending', 'granted', 'denied', 'revoked'], 
-    default: 'pending' 
-  },
-  dataRetentionExpiry: { type: Date },
-  trustLevel: { type: Number, default: 0.5, min: 0, max: 1 },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
-
-// Enhanced indexes
-UserDataSchema.index({ userId: 1, serverId: 1 }, { unique: true });
-UserDataSchema.index({ serverId: 1, totalViolations: -1 });
-UserDataSchema.index({ isAnonymized: 1, anonymizedAt: 1 });
-UserDataSchema.index({ dataRetentionExpiry: 1 }, { expireAfterSeconds: 0 });
-
-// Enhanced Violation Log Schema with security features
-const ViolationLogSchema = new mongoose.Schema({
-  serverId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: validateServerId,
-      message: 'Invalid server ID format'
-    },
-    index: true
-  },
-  userId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: validateUserId,
-      message: 'Invalid user ID format'
-    }
-  },
-  messageId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: (v) => SecurityValidator.validateDiscordId(v, 'message'),
-      message: 'Invalid message ID format'
-    }
-  },
-  channelId: { 
-    type: String, 
-    required: true,
-    validate: {
-      validator: validateChannelId,
-      message: 'Invalid channel ID format'
-    }
-  },
-  content: { 
-    type: String, 
-    required: true,
-    maxlength: [4000, 'Content too long for logging']
-  },
-  // Enhanced content security
-  contentHash: { type: String }, // SHA-256 hash of content for integrity
-  isViolation: { type: Boolean, required: true },
-  category: { 
-    type: String,
-    enum: ['Toxicity', 'Harassment', 'Spam', 'NSFW', 'Other', null],
-    default: null
-  },
-  severity: { 
-    type: String,
-    enum: ['None', 'Mild', 'Moderate', 'Severe', null],
-    default: null
-  },
-  confidence: { 
-    type: Number,
-    min: [0, 'Confidence cannot be negative'],
-    max: [1, 'Confidence cannot exceed 1']
-  },
-  intent: { 
-    type: String,
-    enum: ['question', 'accidental', 'intentional', 'normal', null],
-    default: null
-  },
-  actionTaken: { 
-    type: String,
-    enum: ['none', 'flag', 'warn', 'mute', 'kick', 'ban', 'delete'],
-    default: 'none'
-  },
-  actionSource: { 
-    type: String, 
-    enum: ['pattern', 'AI', 'override', 'fallback'],
-    required: true
-  },
-  processed: { type: Boolean, default: true },
-  skipped: { type: Boolean, default: false },
-  skipReason: { 
-    type: String,
-    maxlength: [200, 'Skip reason too long']
-  },
-  modelUsed: { 
-    type: String,
-    maxlength: [100, 'Model name too long']
-  },
-  provider: {
-    type: String,
-    enum: ['ANTHROPIC', 'OPENROUTER', null],
-    default: null
-  },
-  tokensUsed: { 
-    type: Number,
-    min: [0, 'Tokens used cannot be negative'],
-    max: [1000000, 'Tokens used seems excessive']
-  },
-  processingTimeMs: { 
-    type: Number,
-    min: [0, 'Processing time cannot be negative'],
-    max: [300000, 'Processing time seems excessive (5 minutes)']
-  },
-  // Security and audit fields
-  ipAddress: { type: String }, // Hashed IP for audit trail
-  sessionId: { type: String },
-  requestId: { type: String },
-  createdAt: { type: Date, default: Date.now, index: true }
-});
-
-// Pre-save middleware for content integrity
-ViolationLogSchema.pre('save', function(next) {
-  if (this.content) {
-    this.contentHash = crypto.createHash('sha256')
-      .update(this.content)
-      .digest('hex');
-  }
-  next();
-});
-
-// Enhanced indexes for security and performance
-ViolationLogSchema.index({ serverId: 1, createdAt: -1 });
-ViolationLogSchema.index({ userId: 1, createdAt: -1 });
-ViolationLogSchema.index({ serverId: 1, isViolation: 1, createdAt: -1 });
-ViolationLogSchema.index({ contentHash: 1 }); // For integrity verification
-ViolationLogSchema.index({ requestId: 1 }); // For audit trail
-
-// TTL index with configurable retention
-const logRetentionDays = parseInt(process.env.LOG_RETENTION_DAYS) || 90;
-ViolationLogSchema.index({ createdAt: 1 }, { 
-  expireAfterSeconds: logRetentionDays * 24 * 60 * 60 
-});
-
-// Create models
-const ServerConfig = mongoose.model('ServerConfig', ServerConfigSchema);
-const UserData = mongoose.model('UserData', UserDataSchema);
-const ViolationLog = mongoose.model('ViolationLog', ViolationLogSchema);
-
-// Enhanced database operations with comprehensive security
+// Server Configuration Operations
 async function getServerConfig(serverId, options = {}) {
-  try {
-    // Enhanced security validation
-    const validatedId = SecurityValidator.validateDiscordId(serverId, 'getServerConfig');
-    
-    // Audit logging for sensitive operations
-    await AuditLogger.log({
-      action: 'SERVER_CONFIG_ACCESS',
-      serverId: validatedId,
-      timestamp: Date.now(),
-      ip: options.ip,
-      userId: options.userId
-    });
-    
-    const sanitizedServerId = sanitizeInput(validatedId);
-    let config = await ServerConfig.findOne({ serverId: sanitizedServerId }).lean();
-    
-    if (!config) {
-      // Create default config with audit logging
-      config = await ServerConfig.create({
-        serverId: sanitizedServerId,
-        enabled: false,
-        channels: [],
-        rules: 'Be respectful to others.',
-        strictness: 'medium',
-        notifications: {
-          channel: null,
-          sendAlerts: true
-        },
-        lastModifiedBy: options.userId || 'system'
+  return new Promise((resolve) => {
+    try {
+      // Simple validation
+      if (!serverId || typeof serverId !== 'string') {
+        resolve(null);
+        return;
+      }
+
+      db.get('SELECT * FROM server_configs WHERE server_id = ?', [serverId], async (err, row) => {
+        if (err) {
+          logger.error('Failed to get server config', { error: err.message, serverId });
+          resolve(null);
+          return;
+        }
+
+        if (!row) {
+          // Create default config
+          const config = await createServerConfig(serverId);
+          resolve(config);
+          return;
+        }
+
+        // Parse JSON fields
+        try {
+          if (row.channels) row.channels = JSON.parse(row.channels);
+          if (row.custom_keywords) row.custom_keywords = JSON.parse(row.custom_keywords);
+          if (row.exempt_roles) row.exempt_roles = JSON.parse(row.exempt_roles);
+          if (row.moderator_roles) row.moderator_roles = JSON.parse(row.moderator_roles);
+        } catch (parseErr) {
+          logger.error('Failed to parse server config JSON', { error: parseErr.message });
+        }
+
+        resolve(row);
       });
-      
-      await AuditLogger.log({
-        action: 'SERVER_CONFIG_CREATED',
-        serverId: validatedId,
-        timestamp: Date.now(),
-        userId: options.userId || 'system'
-      });
+    } catch (error) {
+      logger.error('Error in getServerConfig', { error: error.message });
+      resolve(null);
     }
-    
-    // Verify data integrity if hash exists
-    if (config.dataHash) {
-      const expectedHash = crypto.createHash('sha256')
+  });
+}
+
+async function createServerConfig(serverId, config = {}) {
+  return new Promise((resolve) => {
+    try {
+      const defaultConfig = {
+        server_id: serverId,
+        enabled: config.enabled !== undefined ? config.enabled : true,
+        channels: JSON.stringify(config.channels || []),
+        rules: config.rules || 'Default moderation rules',
+        strictness: config.strictness || 5,
+        custom_keywords: JSON.stringify(config.customKeywords || []),
+        exempt_roles: JSON.stringify(config.exemptRoles || []),
+        moderator_roles: JSON.stringify(config.moderatorRoles || []),
+        auto_action: config.autoAction || false,
+        action_threshold: config.actionThreshold || 3,
+        notification_channel: config.notificationChannel || null,
+        log_channel: config.logChannel || null
+      };
+
+      // Create data hash for integrity
+      defaultConfig.data_hash = crypto.createHash('sha256')
         .update(JSON.stringify({
-          rules: config.rules,
-          strictness: config.strictness,
-          enabled: config.enabled
+          rules: defaultConfig.rules,
+          strictness: defaultConfig.strictness,
+          enabled: defaultConfig.enabled
         }))
         .digest('hex');
-      
-      if (expectedHash !== config.dataHash) {
-        await AuditLogger.logSecurityEvent({
-          type: 'DATA_INTEGRITY_VIOLATION',
-          collection: 'ServerConfig',
-          documentId: config._id,
-          expectedHash,
-          actualHash: config.dataHash,
-          timestamp: Date.now()
-        });
-        
-        logger.warn('Data integrity check failed for server config', {
-          serverId: validatedId,
-          expectedHash,
-          actualHash: config.dataHash
-        });
-      }
-    }
-    
-    return config;
-  } catch (error) {
-    if (error.isSecurityError) {
-      await AuditLogger.logSecurityEvent({
-        type: 'SECURITY_VALIDATION_FAILED',
-        operation: 'getServerConfig',
-        error: error.message,
-        serverId: serverId?.substring(0, 10) + '...',
-        timestamp: Date.now()
-      });
-    }
-    
-    return errorManager.handleError(error, 'database', {
-      operation: 'getServerConfig',
-      serverId: serverId?.substring(0, 10) + '...',
-      retryFunction: async () => {
-        const validatedId = SecurityValidator.validateDiscordId(serverId, 'getServerConfig');
-        const sanitizedServerId = sanitizeInput(validatedId);
-        const config = await ServerConfig.findOne({ serverId: sanitizedServerId }).lean();
-        if (!config) {
-          return ServerConfig.create({
-            serverId: sanitizedServerId,
-            enabled: false,
-            channels: [],
-            rules: 'Be respectful to others.',
-            strictness: 'medium',
-            notifications: {
-              channel: null,
-              sendAlerts: true
-            },
-            lastModifiedBy: options.userId || 'system'
-          });
-        }
-        return config;
-      }
-    });
-  }
-}
 
-async function saveServerConfiguration(serverId, config, options = {}) {
-  try {
-    // Enhanced security validation
-    const validatedId = SecurityValidator.validateDiscordId(serverId, 'saveServerConfiguration');
-    
-    if (!config || typeof config !== 'object') {
-      throw SecurityValidator.createSecurityError('Invalid configuration object', {
-        code: 'INVALID_CONFIG_TYPE'
-      });
-    }
-    
-    // Audit logging for configuration changes
-    await AuditLogger.log({
-      action: 'SERVER_CONFIG_MODIFICATION_ATTEMPT',
-      serverId: validatedId,
-      changes: Object.keys(config),
-      timestamp: Date.now(),
-      ip: options.ip,
-      userId: options.userId
-    });
-    
-    // Sanitize and validate configuration
-    const sanitizedServerId = sanitizeInput(validatedId);
-    const sanitizedConfig = {
-      enabled: Boolean(config.enabled),
-      channels: Array.isArray(config.channels) ? 
-        config.channels
-          .filter(id => SecurityValidator.validateDiscordId(id, 'channel'))
-          .map(sanitizeInput) : [],
-      rules: SecurityValidator.sanitizeRules(config.rules?.toString() || 'Be respectful to others.'),
-      strictness: ['low', 'medium', 'high'].includes(config.strictness) ? config.strictness : 'medium',
-      notifications: {
-        channel: config.notifications?.channel && SecurityValidator.validateDiscordId(config.notifications.channel, 'channel') ? 
-          sanitizeInput(config.notifications.channel) : null,
-        sendAlerts: Boolean(config.notifications?.sendAlerts ?? true)
-      },
-      lastModifiedBy: options.userId || 'system',
-      updatedAt: new Date()
-    };
-    
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-      const oldConfig = await ServerConfig.findOne({ serverId: sanitizedServerId }).session(session);
-      
-      const updatedConfig = await ServerConfig.findOneAndUpdate(
-        { serverId: sanitizedServerId },
-        sanitizedConfig,
-        { 
-          new: true, 
-          upsert: true,
-          session,
-          runValidators: true
+      const sql = `INSERT INTO server_configs (
+        server_id, enabled, channels, rules, strictness, custom_keywords,
+        exempt_roles, moderator_roles, auto_action, action_threshold,
+        notification_channel, log_channel, data_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+      const params = [
+        defaultConfig.server_id,
+        defaultConfig.enabled,
+        defaultConfig.channels,
+        defaultConfig.rules,
+        defaultConfig.strictness,
+        defaultConfig.custom_keywords,
+        defaultConfig.exempt_roles,
+        defaultConfig.moderator_roles,
+        defaultConfig.auto_action,
+        defaultConfig.action_threshold,
+        defaultConfig.notification_channel,
+        defaultConfig.log_channel,
+        defaultConfig.data_hash
+      ];
+
+      db.run(sql, params, async function(err) {
+        if (err) {
+          logger.error('Failed to create server config', { error: err.message });
+          resolve(null);
+          return;
         }
-      ).lean();
-      
-      await session.commitTransaction();
-      session.endSession();
-      
-      // Log successful configuration change
-      await AuditLogger.log({
-        action: 'SERVER_CONFIG_UPDATED',
-        serverId: validatedId,
-        changes: this.getConfigChanges(oldConfig, sanitizedConfig),
-        timestamp: Date.now(),
-        userId: options.userId
+
+        // Return the created config
+        const createdConfig = await getServerConfig(serverId);
+        resolve(createdConfig);
       });
-      
-      return updatedConfig;
     } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-      throw error;
+      logger.error('Error in createServerConfig', { error: error.message });
+      resolve(null);
     }
-  } catch (error) {
-    if (error.isSecurityError) {
-      await AuditLogger.logSecurityEvent({
-        type: 'SECURITY_VALIDATION_FAILED',
-        operation: 'saveServerConfiguration',
-        error: error.message,
-        serverId: serverId?.substring(0, 10) + '...',
-        timestamp: Date.now()
-      });
-    }
-    
-    return errorManager.handleError(error, 'database', {
-      operation: 'saveServerConfiguration',
-      serverId: serverId?.substring(0, 10) + '...',
-      retryFunction: async () => {
-        const validatedId = SecurityValidator.validateDiscordId(serverId, 'saveServerConfiguration');
-        const sanitizedServerId = sanitizeInput(validatedId);
-        const sanitizedConfig = {
-          enabled: Boolean(config.enabled),
-          channels: Array.isArray(config.channels) ? 
-            config.channels
-              .filter(id => SecurityValidator.validateDiscordId(id, 'channel'))
-              .map(sanitizeInput) : [],
-          rules: SecurityValidator.sanitizeRules(config.rules?.toString() || 'Be respectful to others.'),
-          strictness: ['low', 'medium', 'high'].includes(config.strictness) ? config.strictness : 'medium',
-          notifications: {
-            channel: config.notifications?.channel && SecurityValidator.validateDiscordId(config.notifications.channel, 'channel') ? 
-              sanitizeInput(config.notifications.channel) : null,
-            sendAlerts: Boolean(config.notifications?.sendAlerts ?? true)
-          },
-          lastModifiedBy: options.userId || 'system',
-          updatedAt: new Date()
-        };
-        
-        return ServerConfig.findOneAndUpdate(
-          { serverId: sanitizedServerId },
-          sanitizedConfig,
-          { 
-            new: true, 
-            upsert: true,
-            runValidators: true
-          }
-        ).lean();
+  });
+}
+
+// Violation Logging
+async function logViolation(action, options = {}) {
+  return new Promise((resolve) => {
+    try {
+      if (!action.serverId || !action.userId) {
+        resolve(null);
+        return;
       }
-    });
-  }
-}
 
-async function getUserData(userId, serverId, options = {}) {
-  try {
-    // Enhanced security validation
-    const validatedUserId = SecurityValidator.validateDiscordId(userId, 'getUserData');
-    const validatedServerId = SecurityValidator.validateDiscordId(serverId, 'getUserData');
-    
-    const sanitizedUserId = sanitizeInput(validatedUserId);
-    const sanitizedServerId = sanitizeInput(validatedServerId);
-    
-    let userData = await UserData.findOne({ 
-      userId: sanitizedUserId, 
-      serverId: sanitizedServerId 
-    }).lean();
-    
-    if (!userData) {
-      userData = await UserData.create({
-        userId: sanitizedUserId,
-        serverId: sanitizedServerId,
-        isExempt: false,
-        exemptUntil: null,
-        joinedAt: new Date(),
-        recentViolations: 0,
-        totalViolations: 0,
-        trustLevel: 0.5
-      });
-      
-      await AuditLogger.log({
-        action: 'USER_DATA_CREATED',
-        userId: validatedUserId,
-        serverId: validatedServerId,
-        timestamp: Date.now()
-      });
-    }
-    
-    // Check if user data should be anonymized based on retention policy
-    if (userData.dataRetentionExpiry && new Date() > userData.dataRetentionExpiry) {
-      await PrivacyManager.anonymizeUserData(validatedUserId, { deleteOriginal: false });
-    }
-    
-    return userData;
-  } catch (error) {
-    if (error.isSecurityError) {
-      await AuditLogger.logSecurityEvent({
-        type: 'SECURITY_VALIDATION_FAILED',
-        operation: 'getUserData',
-        error: error.message,
-        userId: userId?.substring(0, 10) + '...',
-        serverId: serverId?.substring(0, 10) + '...',
-        timestamp: Date.now()
-      });
-    }
-    
-    return errorManager.handleError(error, 'database', {
-      operation: 'getUserData',
-      userId: userId?.substring(0, 10) + '...',
-      serverId: serverId?.substring(0, 10) + '...',
-      retryFunction: async () => {
-        const validatedUserId = SecurityValidator.validateDiscordId(userId, 'getUserData');
-        const validatedServerId = SecurityValidator.validateDiscordId(serverId, 'getUserData');
-        const sanitizedUserId = sanitizeInput(validatedUserId);
-        const sanitizedServerId = sanitizeInput(validatedServerId);
-        
-        const userData = await UserData.findOne({ 
-          userId: sanitizedUserId, 
-          serverId: sanitizedServerId 
-        }).lean();
-        
-        if (!userData) {
-          return UserData.create({
-            userId: sanitizedUserId,
-            serverId: sanitizedServerId,
-            isExempt: false,
-            exemptUntil: null,
-            joinedAt: new Date(),
-            recentViolations: 0,
-            totalViolations: 0,
-            trustLevel: 0.5
-          });
-        }
-        return userData;
-      },
-      fallback: {
-        isExempt: false,
-        recentViolations: 0,
-        totalViolations: 0,
-        joinedRecently: false,
-        trustLevel: 0.5
-      }
-    });
-  }
-}
-
-async function logAction(action, options = {}) {
-  try {
-    if (!action || typeof action !== 'object') {
-      throw SecurityValidator.createSecurityError('Invalid action object', {
-        code: 'INVALID_ACTION_TYPE'
-      });
-    }
-    
-    // Enhanced validation using SecurityValidator
-    const validatedServerId = SecurityValidator.validateDiscordId(action.serverId, 'logAction');
-    const validatedUserId = SecurityValidator.validateDiscordId(action.userId, 'logAction');
-    const validatedMessageId = SecurityValidator.validateDiscordId(action.messageId, 'logAction');
-    const validatedChannelId = SecurityValidator.validateDiscordId(action.channelId, 'logAction');
-    
-    const sanitizedAction = {
-      serverId: sanitizeInput(validatedServerId),
-      userId: sanitizeInput(validatedUserId),
-      messageId: sanitizeInput(validatedMessageId),
-      channelId: sanitizeInput(validatedChannelId),
-      content: SecurityValidator.sanitizeMessageContent(action.content?.toString() || ''),
-      isViolation: Boolean(action.isViolation),
-      category: ['Toxicity', 'Harassment', 'Spam', 'NSFW', 'Other'].includes(action.category) ? 
-        action.category : null,
-      severity: ['None', 'Mild', 'Moderate', 'Severe'].includes(action.severity) ? 
-        action.severity : null,
-      confidence: typeof action.confidence === 'number' && action.confidence >= 0 && action.confidence <= 1 ? 
-        action.confidence : null,
-      intent: ['question', 'accidental', 'intentional', 'normal'].includes(action.intent) ? 
-        action.intent : null,
-      actionTaken: ['none', 'flag', 'warn', 'mute', 'kick', 'ban', 'delete'].includes(action.actionTaken) ? 
-        action.actionTaken : 'none',
-      actionSource: ['pattern', 'AI', 'override', 'fallback'].includes(action.actionSource) ? 
-        action.actionSource : 'pattern',
-      processed: Boolean(action.processed ?? true),
-      skipped: Boolean(action.skipped ?? false),
-      skipReason: action.skipReason ? sanitizeInput(action.skipReason.toString().substring(0, 200)) : null,
-      modelUsed: action.modelUsed ? sanitizeInput(action.modelUsed.toString().substring(0, 100)) : null,
-      provider: ['ANTHROPIC', 'OPENROUTER'].includes(action.provider) ? action.provider : null,
-      tokensUsed: typeof action.tokensUsed === 'number' && action.tokensUsed >= 0 ? 
-        Math.min(action.tokensUsed, 1000000) : null,
-      processingTimeMs: typeof action.processingTimeMs === 'number' && action.processingTimeMs >= 0 ? 
-        Math.min(action.processingTimeMs, 300000) : null,
-      // Enhanced security fields
-      ipAddress: options.ip ? crypto.createHash('sha256').update(options.ip).digest('hex') : null,
-      sessionId: options.sessionId,
-      requestId: options.requestId || crypto.randomUUID()
-    };
-    
-    const violationLog = await ViolationLog.create(sanitizedAction);
-    
-    // Log significant violations for audit
-    if (sanitizedAction.isViolation && ['Moderate', 'Severe'].includes(sanitizedAction.severity)) {
-      await AuditLogger.log({
-        action: 'SIGNIFICANT_VIOLATION_LOGGED',
-        serverId: validatedServerId,
-        userId: validatedUserId,
-        category: sanitizedAction.category,
-        severity: sanitizedAction.severity,
-        confidence: sanitizedAction.confidence,
-        timestamp: Date.now()
-      });
-    }
-    
-    return violationLog;
-  } catch (error) {
-    if (error.isSecurityError) {
-      await AuditLogger.logSecurityEvent({
-        type: 'SECURITY_VALIDATION_FAILED',
-        operation: 'logAction',
-        error: error.message,
-        timestamp: Date.now()
-      });
-    }
-    
-    return errorManager.handleError(error, 'database', {
-      operation: 'logAction',
-      actionType: action?.actionTaken || 'unknown',
-      retryFunction: async () => ViolationLog.create(sanitizedAction)
-    });
-  }
-}
-
-// Helper function to compare config changes
-function getConfigChanges(oldConfig, newConfig) {
-  const changes = {};
-  
-  if (!oldConfig) return { type: 'created' };
-  
-  const fieldsToCheck = ['enabled', 'rules', 'strictness', 'channels'];
-  
-  for (const field of fieldsToCheck) {
-    if (JSON.stringify(oldConfig[field]) !== JSON.stringify(newConfig[field])) {
-      changes[field] = {
-        from: oldConfig[field],
-        to: newConfig[field]
+      const sanitizedAction = {
+        server_id: action.serverId,
+        user_id: action.userId,
+        message_id: action.messageId || '',
+        channel_id: action.channelId || '',
+        content: action.content ? action.content.substring(0, 2000) : null,
+        is_violation: Boolean(action.isViolation),
+        category: action.category || null,
+        severity: action.severity || null,
+        confidence_score: typeof action.confidenceScore === 'number' ? 
+          Math.max(0, Math.min(1, action.confidenceScore)) : null,
+        explanation: action.explanation ? action.explanation.substring(0, 1000) : null,
+        suggested_action: action.suggestedAction || null,
+        action_taken: action.actionTaken || null,
+        human_reviewed: Boolean(action.humanReviewed),
+        reviewer_id: action.reviewerId || null,
+        review_notes: action.reviewNotes || null,
+        model_used: action.modelUsed ? action.modelUsed.substring(0, 100) : null,
+        provider: ['ANTHROPIC', 'OPENROUTER'].includes(action.provider) ? action.provider : null,
+        tokens_used: typeof action.tokensUsed === 'number' && action.tokensUsed >= 0 ? 
+          Math.min(action.tokensUsed, 1000000) : null,
+        processing_time_ms: typeof action.processingTimeMs === 'number' && action.processingTimeMs >= 0 ? 
+          Math.min(action.processingTimeMs, 300000) : null,
+        ip_address_hash: options.ip ? crypto.createHash('sha256').update(options.ip).digest('hex') : null,
+        session_id: options.sessionId || null,
+        request_id: options.requestId || crypto.randomUUID()
       };
+
+      // Create content hash if content exists
+      if (sanitizedAction.content) {
+        sanitizedAction.content_hash = crypto.createHash('sha256')
+          .update(sanitizedAction.content)
+          .digest('hex');
+      }
+
+      const sql = `INSERT INTO violation_logs (
+        server_id, user_id, message_id, channel_id, content, content_hash,
+        is_violation, category, severity, confidence_score, explanation,
+        suggested_action, action_taken, human_reviewed, reviewer_id, review_notes,
+        model_used, provider, tokens_used, processing_time_ms,
+        ip_address_hash, session_id, request_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+      const params = [
+        sanitizedAction.server_id, sanitizedAction.user_id, sanitizedAction.message_id,
+        sanitizedAction.channel_id, sanitizedAction.content, sanitizedAction.content_hash,
+        sanitizedAction.is_violation, sanitizedAction.category, sanitizedAction.severity,
+        sanitizedAction.confidence_score, sanitizedAction.explanation, sanitizedAction.suggested_action,
+        sanitizedAction.action_taken, sanitizedAction.human_reviewed, sanitizedAction.reviewer_id,
+        sanitizedAction.review_notes, sanitizedAction.model_used, sanitizedAction.provider,
+        sanitizedAction.tokens_used, sanitizedAction.processing_time_ms, sanitizedAction.ip_address_hash,
+        sanitizedAction.session_id, sanitizedAction.request_id
+      ];
+
+      db.run(sql, params, function(err) {
+        if (err) {
+          logger.error('Failed to log violation', { error: err.message });
+          resolve(null);
+          return;
+        }
+
+        resolve({ id: this.lastID, ...sanitizedAction });
+      });
+    } catch (error) {
+      logger.error('Error in logViolation', { error: error.message });
+      resolve(null);
     }
-  }
-  
-  return changes;
+  });
+}
+
+// User Data Operations
+async function getUserData(userId, serverId) {
+  return new Promise((resolve) => {
+    try {
+      db.get('SELECT * FROM user_data WHERE user_id = ? AND server_id = ?', [userId, serverId], (err, row) => {
+        if (err) {
+          logger.error('Failed to get user data', { error: err.message });
+          resolve(null);
+          return;
+        }
+        resolve(row);
+      });
+    } catch (error) {
+      logger.error('Error in getUserData', { error: error.message });
+      resolve(null);
+    }
+  });
+}
+
+// Get violation logs with pagination
+async function getViolationLogs(serverId, options = {}) {
+  return new Promise((resolve) => {
+    try {
+      const limit = Math.min(options.limit || 50, 1000);
+      const offset = options.offset || 0;
+      
+      let whereClause = 'WHERE server_id = ?';
+      const params = [serverId];
+      
+      if (options.userId) {
+        whereClause += ' AND user_id = ?';
+        params.push(options.userId);
+      }
+      
+      if (options.isViolation !== undefined) {
+        whereClause += ' AND is_violation = ?';
+        params.push(options.isViolation ? 1 : 0);
+      }
+      
+      params.push(limit, offset);
+      
+      const sql = `SELECT * FROM violation_logs ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      
+      db.all(sql, params, (err, rows) => {
+        if (err) {
+          logger.error('Failed to get violation logs', { error: err.message });
+          resolve([]);
+          return;
+        }
+        resolve(rows || []);
+      });
+    } catch (error) {
+      logger.error('Error in getViolationLogs', { error: error.message });
+      resolve([]);
+    }
+  });
+}
+
+// Database health check
+function checkDatabaseHealth() {
+  return new Promise((resolve) => {
+    if (!db) {
+      resolve(false);
+      return;
+    }
+    
+    db.get('SELECT 1 as health', (err, row) => {
+      if (err) {
+        logger.error('Database health check failed', { error: err.message });
+        resolve(false);
+        return;
+      }
+      resolve(row && row.health === 1);
+    });
+  });
+}
+
+// Close database connection
+function closeDatabase() {
+  return new Promise((resolve) => {
+    if (db) {
+      db.close((err) => {
+        if (err) {
+          logger.error('Error closing database', { error: err.message });
+        } else {
+          logger.info('Database connection closed');
+        }
+        db = null;
+        resolve();
+      });
+    } else {
+      resolve();
+    }
+  });
+}
+
+// Cleanup old logs (run periodically)
+function cleanupOldLogs() {
+  return new Promise((resolve) => {
+    try {
+      const retentionDays = parseInt(process.env.LOG_RETENTION_DAYS) || 90;
+      const sql = `DELETE FROM violation_logs WHERE created_at < datetime('now', '-${retentionDays} days')`;
+      
+      db.run(sql, function(err) {
+        if (err) {
+          logger.error('Failed to cleanup old logs', { error: err.message });
+        } else if (this.changes > 0) {
+          logger.info(`Cleaned up ${this.changes} old violation logs`);
+        }
+        resolve();
+      });
+    } catch (error) {
+      logger.error('Error in cleanupOldLogs', { error: error.message });
+      resolve();
+    }
+  });
 }
 
 module.exports = {
   setupDatabase,
-  ServerConfig,
-  UserData,
-  ViolationLog,
   getServerConfig,
-  saveServerConfiguration,
+  createServerConfig,
+  logViolation,
   getUserData,
-  logAction,
-  sanitizeInput,
-  validateObjectId,
-  validateServerId,
-  validateUserId,
-  validateChannelId,
-  getConfigChanges
+  getViolationLogs,
+  checkDatabaseHealth,
+  closeDatabase,
+  cleanupOldLogs
 };

@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const Redis = require('ioredis');
 const logger = require('./logger');
-const AuditLogger = require('./auditLogger');
+const AuditLogger = require('./audit-logger');
 
 /**
  * Enhanced Session Manager with Redis backend and security features

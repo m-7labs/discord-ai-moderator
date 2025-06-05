@@ -26,3 +26,12 @@ data/
 # OS files
 .DS_Store
 Thumbs.db
+
+.env
+.env.local
+logs/
+data/
+node_modules/
+*.db
+*.log
+

@@ -1,13 +1,13 @@
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 const { performance } = require('perf_hooks');
 const crypto = require('crypto');
 const { sanitizeInput } = require('./database');
 
 // Import enhanced security modules
-const SecurityValidator = require('./utils/securityValidator');
-const AuditLogger = require('./utils/auditLogger');
-const FaultTolerantSystem = require('./utils/faultTolerance');
+const SecurityValidator = require('./utils/security-validator');
+const AuditLogger = require('./utils/audit-logger');
+const { FaultTolerantSystem } = require('./utils/fault-tolerance');
 const CircuitBreaker = require('./utils/circuitBreaker');
 
 // AI Provider configuration with enhanced validation

@@ -3,7 +3,7 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const os = require('os');
 const logger = require('./logger');
-const AuditLogger = require('./auditLogger');
+const AuditLogger = require('./audit-logger');
 
 /**
  * Enhanced Security Monitor with real-time threat detection

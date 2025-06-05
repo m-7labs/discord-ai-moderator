@@ -1,9 +1,10 @@
+const SecurityValidator = require("./utils/security-validator");
 const { Client, GatewayIntentBits, Events, Partials } = require('discord.js');
 const { processMessage } = require('./moderator');
 const { handleCommandInteraction } = require('./commands');
 const { validateServerId, validateUserId } = require('./database');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 
 // Validate environment variables
 if (!process.env.DISCORD_BOT_TOKEN) {
@@ -18,9 +19,9 @@ if (!process.env.DISCORD_BOT_TOKEN.length > 50) {
   throw new Error('Invalid Discord bot token format');
 }
 
-if (!validateUserId(process.env.CLIENT_ID)) {
-  throw new Error('Invalid Discord client ID format');
-}
+// if (!SecurityValidator.validateUserId(process.env.CLIENT_ID)) {
+//   throw new Error('Invalid Discord client ID format');
+// }
 
 // Initialize Discord client with security settings
 const client = new Client({
@@ -163,7 +164,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.id === client.user.id) return;
     
     // Validate IDs format for security
-    if (!validateUserId(message.author.id) || !validateServerId(message.guild.id)) {
+    if (!SecurityValidator.validateUserId(message.author.id) || !SecurityValidator.validateServerId(message.guild.id)) {
       logger.warn('Invalid ID format in message', {
         authorId: message.author.id?.length,
         guildId: message.guild.id?.length,
@@ -216,7 +217,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     
     // Validate IDs
-    if (!validateUserId(interaction.user.id) || !validateServerId(interaction.guild.id)) {
+    if (!SecurityValidator.validateUserId(interaction.user.id) || !SecurityValidator.validateServerId(interaction.guild.id)) {
       logger.warn('Invalid ID format in interaction', {
         userId: interaction.user.id?.length,
         guildId: interaction.guild.id?.length

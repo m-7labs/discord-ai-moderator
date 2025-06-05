@@ -1,7 +1,7 @@
 const EventEmitter = require('events');
 const crypto = require('crypto');
 const logger = require('./logger');
-const AuditLogger = require('./auditLogger');
+const AuditLogger = require('./audit-logger');
 
 /**
  * Circuit Breaker implementation for fault tolerance
@@ -627,7 +627,7 @@ class FaultTolerantSystem extends EventEmitter {
   // Authentication Handlers
   async primaryAuthHandler(context, options = {}) {
     // Primary authentication service
-    const { SessionManager } = require('./sessionManager');
+    const { SessionManager } = require('./session-manager');
     return await SessionManager.verifyToken(context.token, context.options);
   }
   

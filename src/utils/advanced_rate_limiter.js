@@ -5,7 +5,7 @@
 
 const crypto = require('crypto');
 const EventEmitter = require('events');
-const logger = require('../logger');
+const logger = require('./logger');
 
 /**
  * Token Bucket Algorithm Implementation

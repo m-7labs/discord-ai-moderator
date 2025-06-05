@@ -3,7 +3,7 @@ const os = require('os');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 const logger = require('./logger');
-const AuditLogger = require('./auditLogger');
+const AuditLogger = require('./audit-logger');
 
 /**
  * Smart Cache Implementation with LRU and TTL

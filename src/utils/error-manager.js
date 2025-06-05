@@ -525,7 +525,7 @@ class ErrorManager {
       case 'patternAnalysis':
         // For AI moderation, fall back to rule-based pattern matching
         if (context.message && context.message.content) {
-          const { patternAnalysis } = require('../utils/moderationUtils');
+          const { patternAnalysis } = require('../utils/moderation-utils');
           const result = patternAnalysis(context.message.content, context.userData || {});
           
           return {
@@ -812,7 +812,7 @@ class ErrorManager {
       
       // Notify all servers via server admin DMs
       if (this.serviceStatus.discord.healthy) {
-        const { ServerConfig } = require('../database');
+        const { ServerConfig } = require('./database');
         const { client } = require('../bot');
         
         // Get all active server configs
@@ -862,7 +862,7 @@ class ErrorManager {
     try {
       // Notify all servers via server admin DMs
       if (this.serviceStatus.discord.healthy) {
-        const { ServerConfig } = require('../database');
+        const { ServerConfig } = require('./database');
         const { client } = require('../bot');
         
         // Get all active server configs

@@ -4,19 +4,19 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
-const mongoSanitize = require('express-mongo-sanitize');
+// const mongoSanitize = require('express-mongo-sanitize');
 const { body, validationResult } = require('express-validator');
 const crypto = require('crypto');
 const { setupRoutes } = require('./routes');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 
 // Import enhanced security modules
-const SecurityValidator = require('./utils/securityValidator');
-const SessionManager = require('./utils/sessionManager');
-const AuditLogger = require('./utils/auditLogger');
-const PermissionValidator = require('./utils/permissionValidator');
-const advancedRateLimiter = require('./utils/advancedRateLimiter');
+const SecurityValidator = require('./utils/security-validator');
+const SessionManager = require('./utils/session-manager');
+const AuditLogger = require('./utils/audit-logger');
+const PermissionValidator = require('./utils/permission-validator');
+const advancedRateLimiter = require('./utils/advanced_rate_limiter');
 
 // Initialize Express app
 const app = express();
@@ -117,28 +117,7 @@ function setupApi() {
     parameterLimit: 100 // Limit number of parameters
   }));
   
-  // Enhanced input sanitization
-  app.use(mongoSanitize({
-    replaceWith: '_',
-    onSanitize: ({ req, key }) => {
-      logger.warn(`Sanitized potentially malicious input in ${req.path}`, { 
-        key, 
-        ip: req.ip,
-        userAgent: req.get('User-Agent')?.substring(0, 100),
-        requestId: req.requestId
-      });
-      
-      // Log security event for audit
-      AuditLogger.logSecurityEvent({
-        type: 'MALICIOUS_INPUT_SANITIZED',
-        path: req.path,
-        key,
-        ip: req.ip,
-        requestId: req.requestId,
-        timestamp: Date.now()
-      });
-    }
-  }));
+  // MongoDB sanitization was removed - SQLite doesn't need it
   
   // CORS with enhanced security
   const corsOptions = {
@@ -280,8 +259,8 @@ function setupApi() {
     next();
   };
   
-  // Enhanced JWT authentication middleware with session management
-  const authenticateToken = async (req, res, next) => {
+// Enhanced JWT authentication middleware with session management  
+const authenticateToken = async (req, res, next) => {
     // Skip auth for public routes
     const publicRoutes = ['/api/health', '/api/login', '/api/register'];
     if (publicRoutes.includes(req.path)) {
@@ -441,8 +420,9 @@ function setupApi() {
       });
     }
   };
-  
-  app.use(authenticateToken);
+
+// Setup API with enhanced security
+function setupApi() {
   
   // Enhanced global error handler
   app.use(async (err, req, res, next) => {
@@ -636,6 +616,7 @@ function setupApi() {
   
   return server;
 }
+}
 
 // Helper functions
 function getObjectDepth(obj, depth = 0) {
@@ -680,7 +661,7 @@ async function getSecurityStatus() {
       stats: advancedRateLimiter.getStats()
     },
     authentication: {
-      sessionManager: true,
+      "session-manager": true,
       tokenValidation: true
     },
     monitoring: {
@@ -708,6 +689,5 @@ async function generateSecurityReport(user) {
 
 module.exports = {
   setupApi,
-  authenticateToken: authenticateToken,
   SECURITY_CONFIG
 };

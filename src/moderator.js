@@ -12,9 +12,9 @@ const {
   selectModelByRisk, 
   generateOptimalContext, 
   takeAction 
-} = require('./utils/moderationUtils');
+} = require('./utils/moderation-utils');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 const NodeCache = require('node-cache');
 
 // Setup cache

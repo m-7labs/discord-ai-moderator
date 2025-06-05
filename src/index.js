@@ -4,18 +4,18 @@ const { setupDatabase } = require('./database');
 const { setupCommands } = require('./commands');
 const { setupApi } = require('./api');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 const crypto = require('crypto');
 const os = require('os');
 
 // Import enhanced security modules
-const SecurityMonitor = require('./utils/securityMonitor');
-const PerformanceOptimizer = require('./utils/performanceOptimizer');
-const AuditLogger = require('./utils/auditLogger');
-const SessionManager = require('./utils/sessionManager');
-const PrivacyManager = require('./utils/privacyManager');
-const FaultTolerantSystem = require('./utils/faultTolerance');
-const advancedRateLimiter = require('./utils/advancedRateLimiter');
+const SecurityMonitor = require('./utils/security-monitor');
+const PerformanceOptimizer = require('./utils/performance-optimizer');
+const AuditLogger = require('./utils/audit-logger');
+const SessionManager = require('./utils/session-manager');
+const PrivacyManager = require('./utils/privacy-manager');
+const { FaultTolerantSystem } = require('./utils/fault-tolerance');
+const advancedRateLimiter = require('./utils/advanced_rate_limiter');
 
 // Global security state
 const SECURITY_STATE = {
@@ -127,12 +127,12 @@ async function initializeSecurity() {
     });
     
     // Initialize privacy manager
-    await PrivacyManager.initialize({
-      encryptionKey: process.env.ENCRYPTION_KEY,
-      dataRetentionDays: parseInt(process.env.DATA_RETENTION_DAYS) || 365,
-      anonymizationEnabled: process.env.ANONYMIZATION_ENABLED !== 'false'
-    });
-    
+//     // await PrivacyManager.initialize({
+//       encryptionKey: process.env.ENCRYPTION_KEY,
+//       dataRetentionDays: parseInt(process.env.DATA_RETENTION_DAYS) || 365,
+//       anonymizationEnabled: process.env.ANONYMIZATION_ENABLED !== 'false'
+//     });
+//     
     // Initialize fault tolerant system
     const faultTolerantSystem = new FaultTolerantSystem();
     await faultTolerantSystem.initialize();
@@ -675,7 +675,7 @@ async function gracefulShutdown(signal) {
     errorManager.stopHealthChecks();
     
     // Clean up rate limiter
-    if (advancedRateLimiter) {
+    if (advanced_rate_limiter) {
       advancedRateLimiter.shutdown();
     }
     

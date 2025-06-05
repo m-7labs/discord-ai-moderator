@@ -3,8 +3,8 @@
  * @param {Object} interaction - Discord.js interaction object
  */
 async function executeSystemStatusCommand(interaction) {
-  const errorManager = require('../utils/errorManager');
-  const { getServerConfig } = require('../database');
+  const errorManager = require('../utils/error-manager');
+  const { getServerConfig } = require('./database');
   
   try {
     // Check if user has admin permissions
@@ -100,7 +100,7 @@ For additional support, please contact our support team.`;
  * @param {Object} interaction - Discord.js interaction object
  */
 async function executeResetErrorsCommand(interaction) {
-  const errorManager = require('../utils/errorManager');
+  const errorManager = require('../utils/error-manager');
   
   try {
     // Check if user has admin permissions
@@ -175,7 +175,7 @@ async function executeResetErrorsCommand(interaction) {
  * @param {Object} interaction - Discord.js interaction object
  */
 async function executeForceHealthCheckCommand(interaction) {
-  const errorManager = require('../utils/errorManager');
+  const errorManager = require('../utils/error-manager');
   
   try {
     // Check if user has admin permissions

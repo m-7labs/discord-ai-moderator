@@ -4,7 +4,7 @@
  */
 
 const crypto = require('crypto');
-const logger = require('../logger');
+const logger = require('./logger');
 
 class UXOptimizer {
   constructor() {

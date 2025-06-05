@@ -1,3 +1,4 @@
+const SecurityValidator = require("./utils/security-validator");
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v9');
@@ -11,7 +12,7 @@ const {
   executeOverrideCommand,
   executeExemptCommand,
   executeStatsCommand
-} = require('./handlers/commandHandlers');
+} = require('./handlers/command-handlers');
 const logger = require('./utils/logger');
 
 // Define slash commands
@@ -143,7 +144,7 @@ async function handleCommandInteraction(interaction) {
     executeSystemStatusCommand,
     executeResetErrorsCommand,
     executeForceHealthCheckCommand
-  } = require('./handlers/systemHandlers');
+  } = require('./handlers/system-handler');
   
   switch (commandName) {
     case 'modagent_setup':

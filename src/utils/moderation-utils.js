@@ -2,7 +2,7 @@
  * Common utility functions for message moderation
  */
 const logger = require('./logger');
-const errorManager = require('./errorManager');
+const errorManager = require('./error-manager');
 
 /**
  * Determine if a message should be skipped for processing

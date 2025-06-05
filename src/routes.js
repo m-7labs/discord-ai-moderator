@@ -1,3 +1,4 @@
+const SecurityValidator = require("./utils/security-validator");
 const { client } = require('./bot');
 const { body, param, query, validationResult } = require('express-validator');
 const { 
@@ -12,12 +13,12 @@ const {
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/errorManager');
+const errorManager = require('./utils/error-manager');
 
 // Helper function to check admin permissions
 async function verifyAdminPermissions(userId, serverId) {
   try {
-    if (!validateUserId(userId) || !validateServerId(serverId)) {
+    if (!SecurityValidator.validateUserId(userId) || !SecurityValidator.validateServerId(serverId)) {
       return false;
     }
     
