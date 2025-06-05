@@ -4,9 +4,9 @@
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
 [![Security Rating](https://img.shields.io/badge/security-A%2B-brightgreen.svg)](#security-features)
 [![Discord.js](https://img.shields.io/badge/discord.js-v14-blue.svg)](https://discord.js.org/)
-[![Open Source](https://img.shields.io/badge/Open%20Source-❤️-red.svg)](https://github.com/yourusername/discord-ai-moderator)
+[![Open Source](https://img.shields.io/badge/Open%20Source-❤️-red.svg)](https://github.com/m-7labs/discord-ai-moderator)
 
-> **Enterprise-grade AI-powered Discord moderation bot with advanced security, GDPR compliance, and real-time threat monitoring.**
+> **Enterprise-grade AI-powered Discord moderation bot with SQLite reliability, advanced security, GDPR compliance, and real-time threat monitoring.**
 
 ## ✨ Features
 
@@ -25,55 +25,47 @@
 - **Session Management**: JWT-based authentication with Redis backing
 - **Circuit Breakers**: Fault-tolerant architecture with graceful degradation
 
-### 🚀 **Performance & Scalability**
-- **Clustering Support**: Multi-process scaling for high-traffic servers
+### 🚀 **Performance & Reliability**
+- **SQLite Database**: Zero-configuration, reliable local database with no connection timeouts
 - **Smart Caching**: Redis-backed caching with compression
-- **Message Queuing**: Priority-based processing pipeline
 - **Health Monitoring**: Comprehensive system health tracking
 - **Auto-Recovery**: Self-healing components with exponential backoff
+- **Production Ready**: Battle-tested enterprise architecture
 
 ### 🎛️ **Management Features**
-- **Web Dashboard**: Real-time monitoring and configuration interface
+- **Slash Commands**: Full Discord slash command integration
 - **Custom Rules**: Server-specific moderation rules and thresholds
 - **Analytics**: Detailed moderation statistics and trends
-- **Appeal System**: User-friendly violation appeal process
 - **Emergency Procedures**: Automated response to critical security incidents
 
 ## 🚀 Quick Start
 
-### One-Command Setup
+### Simple Installation (5 minutes)
 
-```bash
-git clone https://github.com/yourusername/discord-ai-moderator.git
-cd discord-ai-moderator
-npm run setup:complete
-```
-
-### Prerequisites
+**Prerequisites:**
 - **Node.js** 18.0.0 or higher
-- **MongoDB** 4.4 or higher (or use [MongoDB Atlas](https://mongodb.com/atlas) free tier)
-- **Redis** 6.0 or higher (optional but recommended)
 - **Discord Bot Token** ([Create here](https://discord.com/developers/applications))
-- **AI API Key** ([OpenRouter](https://openrouter.ai) or [Anthropic](https://anthropic.com))
+- **OpenRouter API Key** ([Get free credits](https://openrouter.ai)) or **Anthropic API Key**
 
-### Installation Steps
+### Step-by-Step Setup
 
-1. **Clone and install**
+1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/discord-ai-moderator.git
+   git clone https://github.com/m-7labs/discord-ai-moderator.git
    cd discord-ai-moderator
+   ```
+
+2. **Install dependencies**
+   ```bash
    npm install
    ```
 
-2. **Generate security keys**
+3. **Configure your bot**
    ```bash
-   npm run generate:keys
-   ```
-
-3. **Configure environment**
-   ```bash
-   # The script above creates .env from .env.example
-   # Edit .env with your tokens and API keys
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env with your tokens (see configuration below)
    nano .env
    ```
 
@@ -82,342 +74,258 @@ npm run setup:complete
    npm start
    ```
 
-### Discord Bot Setup
+5. **Invite bot to Discord**
+   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
+   - Select your application → OAuth2 → URL Generator
+   - Select **bot** scope and these permissions:
+     - Read Messages/View Channels
+     - Send Messages
+     - Manage Messages
+     - Moderate Members
+     - Use Slash Commands
+   - Copy the generated URL and invite the bot to your server
 
-1. Create application at [discord.com/developers/applications](https://discord.com/developers/applications)
-2. Create bot and copy token
-3. Enable **Message Content Intent** and **Server Members Intent**
-4. Invite bot with permissions:
-   - Read Messages/View Channels
-   - Send Messages  
-   - Manage Messages
-   - Moderate Members
-   - Use Slash Commands
+### Required Configuration
 
-### Docker Setup (Recommended)
+Edit your `.env` file with these essential settings:
 
-```bash
-# Quick start with Docker Compose
-npm run compose:up
+```env
+# Discord Configuration (Required)
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
+DISCORD_APPLICATION_ID=your_application_id_here
+CLIENT_ID=your_application_id_here
 
-# Manual Docker build
-npm run docker:build
-npm run docker:run
+# AI Provider (Choose one)
+AI_PROVIDER=OPENROUTER
+OPENROUTER_API_KEY=sk-or-v1-your_openrouter_api_key_here
+
+# OR use Anthropic instead
+# AI_PROVIDER=ANTHROPIC
+# ANTHROPIC_API_KEY=sk-ant-your_anthropic_api_key_here
+
+# Database (SQLite - no setup required!)
+DB_TYPE=SQLITE
+DATABASE_PATH=./data/discord-ai-mod.db
+
+# Redis (Optional - for better performance)
+REDIS_URL=redis://localhost:6379
+
+# Security (Auto-generated - no changes needed)
+JWT_SECRET=your_jwt_secret_key_here_minimum_32_chars
+ENCRYPTION_KEY=your_encryption_key_here_64_hex_chars
+```
+
+### Discord Bot Setup Guide
+
+1. **Create Discord Application**
+   - Go to https://discord.com/developers/applications
+   - Click "New Application"
+   - Give it a name (e.g., "AI Moderator")
+
+2. **Create Bot**
+   - Go to "Bot" section
+   - Click "Add Bot"
+   - Copy the **Token** (this is your `DISCORD_BOT_TOKEN`)
+
+3. **Enable Intents**
+   - In Bot settings, enable:
+     - ✅ **Message Content Intent**
+     - ✅ **Server Members Intent**
+
+4. **Get Application ID**
+   - Go to "General Information"
+   - Copy **Application ID** (this is your `DISCORD_APPLICATION_ID`)
+
+5. **Invite Bot**
+   - Go to OAuth2 → URL Generator
+   - Select **bot** and **applications.commands** scopes
+   - Select permissions:
+     - Read Messages/View Channels
+     - Send Messages
+     - Manage Messages
+     - Moderate Members
+   - Use generated URL to invite bot
+
+### First Time Setup
+
+After starting the bot, use these Discord commands:
+
+```
+/modagent_setup    # Run the setup wizard
+/modagent_status   # Check bot status
+/modagent_help     # See all commands
 ```
 
 ## ⚙️ Configuration
 
-### Environment Variables
+### Essential Environment Variables
 
-| Variable | Required | Description | Default |
+| Variable | Required | Description | Example |
 |----------|----------|-------------|---------|
-| `DISCORD_BOT_TOKEN` | ✅ | Discord bot token | - |
-| `CLIENT_ID` | ✅ | Discord application ID | - |
-| `AI_PROVIDER` | ✅ | `OPENROUTER` or `ANTHROPIC` | `OPENROUTER` |
-| `OPENROUTER_API_KEY` | ✅* | OpenRouter API key | - |
-| `ANTHROPIC_API_KEY` | ✅* | Anthropic API key | - |
-| `MONGODB_URI` | ✅ | MongoDB connection string | - |
-| `REDIS_URL` | ⚠️ | Redis connection URL | - |
-| `JWT_SECRET` | 🔐 | Auto-generated by setup | - |
-| `ENCRYPTION_KEY` | 🔐 | Auto-generated by setup | - |
+| `DISCORD_BOT_TOKEN` | ✅ | Discord bot token | `MTM3O...` |
+| `DISCORD_APPLICATION_ID` | ✅ | Discord application ID | `1379718945...` |
+| `AI_PROVIDER` | ✅ | AI provider (`OPENROUTER` or `ANTHROPIC`) | `OPENROUTER` |
+| `OPENROUTER_API_KEY` | ✅* | OpenRouter API key | `sk-or-v1-...` |
+| `ANTHROPIC_API_KEY` | ✅* | Anthropic API key | `sk-ant-...` |
 
 *Required based on chosen AI provider
 
-### AI Model Configuration
+### Database Options
 
+**SQLite (Default - Recommended for most users)**
 ```env
-# OpenRouter Model Examples (Recommended)
-LOW_RISK_MODEL=anthropic/claude-3-haiku:beta      # Fast & cheap
-MEDIUM_RISK_MODEL=anthropic/claude-3-sonnet:beta  # Balanced
-HIGH_RISK_MODEL=anthropic/claude-3-opus:beta      # Best accuracy
-
-# Alternative providers
-LOW_RISK_MODEL=openai/gpt-3.5-turbo
-MEDIUM_RISK_MODEL=openai/gpt-4-turbo-preview
-HIGH_RISK_MODEL=google/gemini-pro
+DB_TYPE=SQLITE
+DATABASE_PATH=./data/discord-ai-mod.db
 ```
+- ✅ Zero configuration required
+- ✅ No connection timeouts
+- ✅ Perfect for single-server deployments
+- ✅ Automatic database creation
 
-### Security Configuration
+**MongoDB (Advanced users)**
+```env
+DB_TYPE=MONGODB
+MONGODB_URI=mongodb://localhost:27017/discord-ai-moderator
+```
+- Requires MongoDB installation
+- Better for multi-server deployments
+- Requires additional setup
+
+### Optional Enhancements
 
 ```env
-# Performance & Security
-ENABLE_CLUSTERING=true
-ENABLE_CACHING=true
-SECURITY_WS_PORT=8080
-MONITORING_INTERVAL=30000
-
-# Privacy & Compliance
-DATA_RETENTION_DAYS=365
-ANONYMIZATION_ENABLED=true
-AUDIT_RETENTION_DAYS=90
+# Redis (for better performance)
+REDIS_URL=redis://localhost:6379
 
 # Dashboard
 DASHBOARD_ENABLED=true
 DASHBOARD_PORT=3000
+
+# Security monitoring
+SECURITY_WS_PORT=8080
+ENABLE_REAL_TIME_MONITORING=true
 ```
 
 ## 🔧 Usage
 
-### Slash Commands
+### Available Commands
 
-| Command | Description | Permissions |
+| Command | Description | Who Can Use |
 |---------|-------------|-------------|
-| `/moderate setup` | Initialize moderation for your server | Admin |
-| `/moderate rules` | Configure custom moderation rules | Admin |
-| `/moderate status` | View moderation statistics | Moderator |
-| `/moderate appeal` | Submit an appeal for a violation | Everyone |
-| `/moderate test` | Test the moderation system | Admin |
-| `/moderate system` | View detailed system health | Admin |
-| `/moderate help` | Show all available commands | Everyone |
+| `/modagent_help` | Show all available commands | Everyone |
+| `/modagent_status` | View bot status and statistics | Moderators |
+| `/modagent_setup` | Initial server configuration wizard | Admins |
+| `/modagent_config` | Change moderation settings | Admins |
+| `/modagent_review` | Manually review a message | Moderators |
+| `/modagent_stats` | View detailed statistics | Moderators |
+| `/modagent_system` | System health information | Admins |
 
-### Advanced Commands
+### Basic Usage
 
-| Command | Description | Permissions |
-|---------|-------------|-------------|
-| `/moderate export` | Export server data (GDPR compliance) | Admin |
-| `/moderate import` | Import moderation rules | Admin |
-| `/moderate emergency` | Emergency shutdown procedures | Owner |
-| `/moderate audit` | Generate audit reports | Admin |
+1. **Setup your server**
+   ```
+   /modagent_setup
+   ```
+   Follow the setup wizard to configure basic moderation rules.
 
-### Dashboard
+2. **Check status**
+   ```
+   /modagent_status
+   ```
+   Verify the bot is working and see current statistics.
 
-Access the web dashboard at `http://localhost:3000` for:
-- Real-time moderation logs and alerts
-- Server analytics and performance metrics
-- Configuration management interface
-- User appeal reviews and responses
-- Security monitoring and threat detection
-- System health and component status
+3. **Configure settings**
+   ```
+   /modagent_config
+   ```
+   Adjust moderation level, rules, and monitored channels.
+
+### AI Moderation
+
+The bot automatically:
+- Monitors all messages in your server
+- Detects harmful content using AI
+- Takes appropriate action based on severity
+- Logs all moderation decisions
+- Provides explanations for actions taken
 
 ## 🛡️ Security Features
 
 ### Built-in Protection
+- **SQLite Database**: Secure, local storage with no external dependencies
 - **Input Validation**: Comprehensive sanitization preventing injection attacks
 - **Rate Limiting**: Multi-tier protection against spam and DDoS attacks
-- **Authentication**: JWT-based session management with Redis storage
-- **Encryption**: AES-256 encryption for sensitive data at rest
-- **Audit Logging**: Tamper-proof audit trails with HMAC signatures
+- **Audit Logging**: Complete moderation history with tamper-proof logs
 - **Privacy Compliance**: GDPR-compliant data handling and anonymization
 
-### Security Monitoring
-- **Real-time Threat Detection**: ML-based anomaly detection
-- **Pattern Recognition**: Automated identification of attack patterns
-- **WebSocket Security Alerts**: Instant notifications for security events
-- **Automated Incident Response**: Emergency procedures for critical threats
-- **Emergency Shutdown**: Automated protective measures during attacks
+### Monitoring
+- **Real-time Alerts**: Instant notifications for security events
+- **Health Checks**: Continuous monitoring of all system components
+- **Auto-Recovery**: Automatic healing from service disruptions
+- **Performance Metrics**: Detailed system performance tracking
 
-### Error Management and System Resilience
+## 🐳 Docker Setup (Optional)
 
-The system includes sophisticated error management providing:
+For advanced users who prefer containerized deployment:
 
-#### Key Features
-- **Intelligent Error Recovery**: Automatically applies appropriate recovery strategies
-- **Health Monitoring**: Continuously monitors all system dependencies
-- **Graceful Degradation**: Preserves core functionality during service outages
-- **Self-Healing**: Periodic recovery attempts with exponential backoff
-- **Comprehensive Logging**: Structured logging with error deduplication
+```bash
+# Clone repository
+git clone https://github.com/m-7labs/discord-ai-moderator.git
+cd discord-ai-moderator
 
-#### Recovery Strategies
-1. **Retry with Backoff**: Automatic retries with exponential delays
-2. **Circuit Breaking**: Prevents cascade failures by isolating failed services
-3. **Fallbacks**: Alternative methods when primary services fail:
-   - Pattern-based moderation when AI is unavailable
-   - In-memory caching when database is unavailable
-   - Local session storage when Redis is down
-
-#### Degraded Mode Operation
-When critical services are unavailable:
-- Uses lighter-weight AI models to reduce costs
-- Focuses processing on high-risk messages only
-- Employs rule-based detection for common violations
-- Notifies administrators of system status changes
+# Build and run with Docker Compose
+docker-compose up -d
+```
 
 ## 📊 Performance
 
-### Benchmarks
+### Specifications
 - **Throughput**: 1000+ messages/minute per instance
 - **Latency**: <200ms average response time
 - **Accuracy**: 95%+ moderation accuracy with AI models
 - **Uptime**: 99.9% availability with fault tolerance
-- **Cost Efficiency**: 40-70% cost reduction vs. single-model approach
+- **Database**: Zero-latency SQLite with no connection issues
 
-### Scaling Options
-- **Horizontal Scaling**: Multi-instance deployment with load balancing
-- **Vertical Scaling**: Clustering support for multi-core utilization
-- **Database Sharding**: MongoDB cluster support for large deployments
-- **CDN Integration**: Redis clustering for distributed caching
-- **Auto-scaling**: Dynamic resource allocation based on load
+## 🔧 Troubleshooting
 
-## 🧪 Development
+### Common Issues
 
-### Development Environment
+**Bot not responding to commands:**
+1. Check bot has proper permissions in Discord
+2. Verify `DISCORD_BOT_TOKEN` is correct
+3. Ensure bot is online (check logs)
 
-```bash
-# Install with development dependencies
-npm install
+**Commands not appearing:**
+1. Verify `DISCORD_APPLICATION_ID` matches your bot
+2. Check bot has "Use Slash Commands" permission
+3. Wait a few minutes for Discord to sync commands
 
-# Run in development mode with hot reload
-npm run dev
+**Database errors:**
+1. Ensure `data/` directory exists and is writable
+2. Check disk space availability
+3. Verify SQLite3 is properly installed
 
-# Run all validation checks
-npm run validate
+**AI not working:**
+1. Verify your API key is correct and has credits
+2. Check `AI_PROVIDER` setting matches your key type
+3. Review logs for API errors
 
-# Format code
-npm run format
-```
+### Getting Help
 
-### Testing
-
-```bash
-# Run all tests
-npm run test:all
-
-# Unit tests with coverage
-npm run test:coverage
-
-# Integration tests
-npm run test:integration
-
-# Security audit
-npm run test:security
-
-# Watch mode for development
-npm run test:watch
-```
-
-### Code Quality
-
-```bash
-# Lint code
-npm run lint
-
-# Fix linting issues
-npm run lint:fix
-
-# Check code formatting
-npm run format:check
-
-# Update dependencies
-npm run update:deps
-```
-
-## 🐳 Production Deployment
-
-### Docker Compose (Recommended)
-
-```yaml
-version: '3.8'
-services:
-  discord-bot:
-    build: .
-    environment:
-      - NODE_ENV=production
-      - ENABLE_CLUSTERING=true
-    env_file: .env
-    depends_on:
-      - mongodb
-      - redis
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-
-  mongodb:
-    image: mongo:7
-    volumes:
-      - mongodb_data:/data/db
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=secure_password
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-
-volumes:
-  mongodb_data:
-  redis_data:
-```
-
-### Production Commands
-
-```bash
-# Build for production
-NODE_ENV=production npm run validate
-
-# Run with clustering
-npm run cluster
-
-# Docker deployment
-npm run compose:up
-
-# Monitor logs
-npm run compose:logs
-```
-
-### Monitoring
-
-```bash
-# System health
-npm run health:check
-
-# Performance metrics
-npm run metrics:collect
-
-# Security audit
-npm run security:audit
-
-# Backup data
-npm run backup:data
-```
-
-## 📚 API Documentation
-
-### REST API Endpoints
-
-| Endpoint | Method | Description | Auth Required |
-|----------|--------|-------------|---------------|
-| `/api/health` | GET | System health check | ❌ |
-| `/api/servers` | GET | List managed servers | ✅ |
-| `/api/servers/:id/stats` | GET | Server moderation statistics | ✅ |
-| `/api/servers/:id/rules` | PUT | Update server moderation rules | ✅ |
-| `/api/appeals` | POST | Submit moderation appeal | ❌ |
-| `/api/appeals/:id` | GET | Get appeal status | ✅ |
-| `/api/audit/events` | GET | Retrieve audit events | ✅ |
-| `/api/security/alerts` | GET | Get security alerts | ✅ |
-
-### WebSocket Events
-
-Real-time events via WebSocket connection:
-
-- `securityAlert` - Critical security incidents
-- `moderationAction` - Real-time moderation events  
-- `serverStats` - Live server statistics
-- `systemHealth` - Component health updates
-- `threatDetected` - Security threat notifications
+- **Check the logs**: Look in `logs/` directory for error details
+- **Use health check**: Run `/modagent_system` to see component status
+- **GitHub Issues**: [Report bugs here](https://github.com/m-7labs/discord-ai-moderator/issues)
+- **Discussions**: [Ask questions here](https://github.com/m-7labs/discord-ai-moderator/discussions)
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md).
-
-### Development Workflow
+We welcome contributions! To contribute:
 
 1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Run tests (`npm run test:all`)
-4. Commit changes (`git commit -m 'Add amazing feature'`)
-5. Push to branch (`git push origin feature/amazing-feature`)
-6. Open Pull Request
-
-### Code Standards
-- ESLint + Prettier configuration enforced
-- Security-focused linting rules
-- 80%+ test coverage required
-- TypeScript definitions for better IDE support
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
 
 ## 📄 License
 
@@ -428,36 +336,21 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Discord.js](https://discord.js.org/) - Discord API wrapper
 - [Anthropic](https://anthropic.com/) - Claude AI models
 - [OpenRouter](https://openrouter.ai/) - Multi-provider AI access
-- [MongoDB](https://mongodb.com/) - Database platform
+- [SQLite](https://sqlite.org/) - Reliable embedded database
 - [Redis](https://redis.io/) - Caching and session storage
 
 ## 📞 Support
 
-- **Documentation**: [GitHub Wiki](https://github.com/yourusername/discord-ai-moderator/wiki)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/discord-ai-moderator/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/discord-ai-moderator/discussions)
-- **Security**: [Security Policy](SECURITY.md)
-- **Installation Help**: [Installation Guide](INSTALLATION.md)
-
-## 🗺️ Roadmap
-
-- [ ] Plugin system for custom moderation rules
-- [ ] Multi-language admin dashboard interface
-- [ ] Advanced analytics with machine learning insights
-- [ ] Integration APIs for popular Discord bots
-- [ ] Mobile app for moderation management
-- [ ] Kubernetes deployment templates
-- [ ] Voice channel moderation support
-- [ ] Advanced user behavior analytics
+- **Documentation**: [GitHub Wiki](https://github.com/m-7labs/discord-ai-moderator/wiki)
+- **Issues**: [GitHub Issues](https://github.com/m-7labs/discord-ai-moderator/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/m-7labs/discord-ai-moderator/discussions)
 
 ---
 
 <div align="center">
 
-**[⭐ Star this repository](https://github.com/yourusername/discord-ai-moderator)** if you find it helpful!
+**[⭐ Star this repository](https://github.com/m-7labs/discord-ai-moderator)** if you find it helpful!
 
-**[📖 Read the Installation Guide](INSTALLATION.md)** | **[🔧 View Configuration Examples](https://github.com/yourusername/discord-ai-moderator/wiki)**
-
-Made with ❤️ for the open source community
+Made with ❤️ for the Discord community
 
 </div>
