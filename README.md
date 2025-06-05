@@ -11,7 +11,7 @@
 ## ✨ Features
 
 ### 🧠 **AI-Powered Moderation**
-- **Multi-Provider Support**: OpenRouter (Claude, GPT, Gemini) & Anthropic Claude
+- **Multi-Provider Support**: OpenRouter (Claude, GPT, Gemini) 
 - **Smart Cost Optimization**: 3-tier model selection (40-70% cost reduction)
 - **Context-Aware Decisions**: Understands nuance, sarcasm, and context
 - **Multilingual Support**: Moderates content in 15+ languages
@@ -51,7 +51,7 @@ npm run setup:complete
 
 ### Prerequisites
 - **Node.js** 18.0.0 or higher
-- **MongoDB** 4.4 or higher (or use [MongoDB Atlas](https://mongodb.com/atlas) free tier)
+- **SQLite3** Zero-configuration embedded database
 - **Redis** 6.0 or higher (optional but recommended)
 - **Discord Bot Token** ([Create here](https://discord.com/developers/applications))
 - **AI API Key** ([OpenRouter](https://openrouter.ai) or [Anthropic](https://anthropic.com))
