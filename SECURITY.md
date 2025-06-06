@@ -9,7 +9,7 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities via email to [your-email@example.com].
+Please report security vulnerabilities via email to [dam@minussevenlabs.com].
 
 **Do not report security vulnerabilities through public GitHub issues.**
 
@@ -19,4 +19,4 @@ Include:
 - Potential impact
 - Suggested fix (if any)
 
-We will respond within 48 hours and provide updates regularly.
+We will respond ASAP and provide updates as possible.

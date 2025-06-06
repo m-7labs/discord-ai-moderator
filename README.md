@@ -11,7 +11,7 @@
 ## ✨ Features
 
 ### 🧠 **AI-Powered Moderation**
-- **Multi-Provider Support**: OpenRouter (Claude, GPT, Gemini) & Anthropic Claude
+- **Multi-Provider Support**: OpenRouter (Claude, GPT, Gemini) 
 - **Smart Cost Optimization**: 3-tier model selection (40-70% cost reduction)
 - **Context-Aware Decisions**: Understands nuance, sarcasm, and context
 - **Multilingual Support**: Moderates content in 15+ languages
@@ -44,6 +44,8 @@
 
 **Prerequisites:**
 - **Node.js** 18.0.0 or higher
+- **SQLite3** Zero-configuration embedded database
+- **Redis** 6.0 or higher (optional but recommended)
 - **Discord Bot Token** ([Create here](https://discord.com/developers/applications))
 - **OpenRouter API Key** ([Get free credits](https://openrouter.ai)) or **Anthropic API Key**
 
@@ -353,4 +355,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Made with ❤️ for the Discord community
 
+<<<<<<< HEAD
+=======
+Made with ❤️ for the open source community
+
+>>>>>>> 4d0eb38563794c97e95a0599f94d277ab04ab5f0
 </div>
