@@ -52,43 +52,66 @@ const RATE_LIMIT_WINDOW = 60000; // 1 minute
 function checkMessageRateLimit(guildId) {
   const now = Date.now();
   const key = `guild_${guildId}`;
-  
+
   if (!messageProcessingLimiter.has(key)) {
     messageProcessingLimiter.set(key, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
     return true;
   }
-  
+
   const data = messageProcessingLimiter.get(key);
-  
+
   if (now > data.resetTime) {
     // Reset the counter
     messageProcessingLimiter.set(key, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
     return true;
   }
-  
+
   if (data.count >= PROCESSING_RATE_LIMIT) {
     return false; // Rate limited
   }
-  
+
   data.count++;
   return true;
 }
 
-// Clean up rate limiting data periodically
+// Clean up rate limiting data periodically with memory pressure monitoring
 setInterval(() => {
   const now = Date.now();
+  const memoryUsage = process.memoryUsage();
+  const memoryPressure = memoryUsage.heapUsed / memoryUsage.heapTotal;
+
+  let cleaned = 0;
+
+  // Clean up expired entries
   for (const [key, data] of messageProcessingLimiter.entries()) {
-    if (now > data.resetTime) {
+    if (now > data.resetTime + RATE_LIMIT_WINDOW) { // Add buffer time
       messageProcessingLimiter.delete(key);
+      cleaned++;
     }
+  }
+
+  // Enforce maximum size under memory pressure
+  if (memoryPressure > 0.8 && messageProcessingLimiter.size > 1000) {
+    const entries = Array.from(messageProcessingLimiter.entries())
+      .sort((a, b) => a[1].resetTime - b[1].resetTime);
+    const toRemove = entries.slice(0, messageProcessingLimiter.size - 1000);
+
+    for (const [key] of toRemove) {
+      messageProcessingLimiter.delete(key);
+      cleaned++;
+    }
+  }
+
+  if (cleaned > 0) {
+    logger.debug(`Bot rate limiter cleanup: removed ${cleaned} entries (memory: ${(memoryPressure * 100).toFixed(1)}%)`);
   }
 }, RATE_LIMIT_WINDOW);
 
 // Setup client event listeners for error handling
 client.on('error', (error) => {
-  errorManager.handleError(error, 'discord', { 
+  errorManager.handleError(error, 'discord', {
     operation: 'client',
-    critical: true 
+    critical: true
   });
 });
 
@@ -115,7 +138,7 @@ client.on('debug', (message) => {
 client.once(Events.ClientReady, () => {
   logger.info(`Logged in as ${client.user.tag}`);
   logger.info(`Connected to ${client.guilds.cache.size} servers`);
-  
+
   // Validate bot permissions in all guilds
   client.guilds.cache.forEach(guild => {
     const botMember = guild.members.me;
@@ -123,7 +146,7 @@ client.once(Events.ClientReady, () => {
       logger.warn(`Bot not found as member in guild ${guild.name} (${guild.id})`);
       return;
     }
-    
+
     // Check essential permissions
     const requiredPermissions = [
       'ViewChannel',
@@ -132,16 +155,16 @@ client.once(Events.ClientReady, () => {
       'ManageMessages',
       'ModerateMembers'
     ];
-    
+
     const missingPermissions = requiredPermissions.filter(
       permission => !botMember.permissions.has(permission)
     );
-    
+
     if (missingPermissions.length > 0) {
       logger.warn(`Missing permissions in ${guild.name}: ${missingPermissions.join(', ')}`);
     }
   });
-  
+
   // Setup presence with security-conscious information
   client.user.setPresence({
     activities: [{
@@ -159,10 +182,10 @@ client.on(Events.MessageCreate, async (message) => {
     if (!message || !message.guild || !message.author) {
       return;
     }
-    
+
     // Skip messages from self
     if (message.author.id === client.user.id) return;
-    
+
     // Validate IDs format for security
     if (!SecurityValidator.validateUserId(message.author.id) || !SecurityValidator.validateServerId(message.guild.id)) {
       logger.warn('Invalid ID format in message', {
@@ -172,13 +195,13 @@ client.on(Events.MessageCreate, async (message) => {
       });
       return;
     }
-    
+
     // Check rate limiting per guild
     if (!checkMessageRateLimit(message.guild.id)) {
       logger.warn(`Rate limit exceeded for guild ${message.guild.id}`);
       return;
     }
-    
+
     // Content length check
     if (message.content && message.content.length > 4000) {
       logger.warn('Message content too long, skipping processing', {
@@ -187,13 +210,13 @@ client.on(Events.MessageCreate, async (message) => {
       });
       return;
     }
-    
+
     // Check if message is from a webhook (additional security)
     if (message.webhookId) {
       logger.debug('Skipping webhook message', { webhookId: message.webhookId });
       return;
     }
-    
+
     // Process message for moderation
     await processMessage(message);
   } catch (error) {
@@ -215,7 +238,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       logger.warn('Invalid interaction received');
       return;
     }
-    
+
     // Validate IDs
     if (!SecurityValidator.validateUserId(interaction.user.id) || !SecurityValidator.validateServerId(interaction.guild.id)) {
       logger.warn('Invalid ID format in interaction', {
@@ -224,7 +247,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       });
       return;
     }
-    
+
     // Only handle command interactions from our app
     if (interaction.isCommand()) {
       // Verify the command is from our application
@@ -235,7 +258,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         });
         return;
       }
-      
+
       // Check if user has required permissions for the command
       const member = interaction.member;
       if (!member) {
@@ -245,7 +268,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         });
         return;
       }
-      
+
       // Log command usage for security monitoring
       logger.info('Command executed', {
         command: interaction.commandName,
@@ -253,7 +276,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         guildId: interaction.guild.id.substring(0, 10) + '...',
         username: interaction.user.username
       });
-      
+
       await handleCommandInteraction(interaction);
     }
   } catch (error) {
@@ -263,7 +286,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       commandName: interaction?.commandName,
       userId: interaction?.user?.id?.substring(0, 10) + '...'
     });
-    
+
     // Respond to user if we haven't already
     try {
       if (!interaction.replied && !interaction.deferred) {
@@ -289,12 +312,12 @@ client.on(Events.GuildCreate, (guild) => {
     memberCount: guild.memberCount,
     ownerId: guild.ownerId?.substring(0, 10) + '...'
   });
-  
+
   // Check if this is a suspicious guild (very large or very new)
   if (guild.memberCount > 100000) {
     logger.warn(`Added to very large guild: ${guild.name} (${guild.memberCount} members)`);
   }
-  
+
   const guildAge = Date.now() - guild.createdTimestamp;
   if (guildAge < 24 * 60 * 60 * 1000) { // Less than 24 hours old
     logger.warn(`Added to very new guild: ${guild.name} (created ${new Date(guild.createdTimestamp)})`);

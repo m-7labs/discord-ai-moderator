@@ -3,15 +3,28 @@ const errorManager = require('./utils/error-manager');
 const { performance } = require('perf_hooks');
 const crypto = require('crypto');
 const { sanitizeInput } = require('./database');
+const DataLoader = require('dataloader');
 
 // Import enhanced security modules
 const SecurityValidator = require('./utils/security-validator');
 const AuditLogger = require('./utils/audit-logger');
 const { FaultTolerantSystem } = require('./utils/fault-tolerance');
 const CircuitBreaker = require('./utils/circuitBreaker');
+const { getCacheManager } = require('./utils/cache-manager');
 
 // AI Provider configuration with enhanced validation
 const AI_PROVIDER = process.env.AI_PROVIDER || 'OPENROUTER';
+
+// Initialize cache manager
+const aiCache = getCacheManager({
+  l1: {
+    maxSize: 50 * 1024 * 1024, // 50MB for AI responses
+    stdTTL: 300 // 5 minutes
+  },
+  l2: {
+    defaultTTL: 1800 // 30 minutes in Redis
+  }
+});
 
 // Validate environment configuration with security checks
 if (!['ANTHROPIC', 'OPENROUTER'].includes(AI_PROVIDER)) {
@@ -39,22 +52,22 @@ class RequestSigner {
       logger.warn('No AI API secret configured, request signing disabled');
     }
   }
-  
+
   sign(data) {
     if (!this.secret) return null;
-    
+
     const payload = JSON.stringify(data);
     const signature = crypto
       .createHmac('sha256', this.secret)
       .update(payload)
       .digest('hex');
-    
+
     return signature;
   }
-  
+
   verify(data, signature) {
     if (!this.secret || !signature) return false;
-    
+
     const expectedSignature = this.sign(data);
     return crypto.timingSafeEqual(
       Buffer.from(signature, 'hex'),
@@ -72,20 +85,20 @@ class CostTracker {
     this.maxDailySpend = parseFloat(process.env.MAX_DAILY_SPEND) || 100.00;
     this.alertThreshold = parseFloat(process.env.ALERT_THRESHOLD) || 50.00;
   }
-  
+
   async track(usage) {
     try {
       const cost = this.calculateCost(usage);
-      
+
       // Reset daily counter if needed
       const today = new Date().toDateString();
       if (today !== this.lastResetDate) {
         this.dailySpend = 0;
         this.lastResetDate = today;
       }
-      
+
       this.dailySpend += cost;
-      
+
       // Check spending limits
       if (this.dailySpend > this.maxDailySpend) {
         await AuditLogger.logSecurityEvent({
@@ -94,10 +107,10 @@ class CostTracker {
           maxDailySpend: this.maxDailySpend,
           timestamp: Date.now()
         });
-        
+
         throw new Error('Daily spending limit exceeded');
       }
-      
+
       if (this.dailySpend > this.alertThreshold) {
         await AuditLogger.log({
           action: 'SPENDING_ALERT',
@@ -106,7 +119,7 @@ class CostTracker {
           timestamp: Date.now()
         });
       }
-      
+
       // Log usage for audit
       await AuditLogger.log({
         action: 'AI_API_USAGE',
@@ -117,13 +130,13 @@ class CostTracker {
         dailySpend: this.dailySpend,
         timestamp: Date.now()
       });
-      
+
     } catch (error) {
       logger.error('Cost tracking failed:', error);
       throw error;
     }
   }
-  
+
   calculateCost(usage) {
     // Pricing per 1K tokens (approximate)
     const pricing = {
@@ -133,7 +146,7 @@ class CostTracker {
       'gpt-4': { input: 0.03, output: 0.06 },
       'gpt-3.5-turbo': { input: 0.001, output: 0.002 }
     };
-    
+
     // Find matching pricing
     let modelPricing = null;
     for (const [model, prices] of Object.entries(pricing)) {
@@ -142,18 +155,18 @@ class CostTracker {
         break;
       }
     }
-    
+
     if (!modelPricing) {
       // Default pricing for unknown models
       modelPricing = { input: 0.01, output: 0.03 };
     }
-    
+
     const inputCost = (usage.input_tokens / 1000) * modelPricing.input;
     const outputCost = (usage.output_tokens / 1000) * modelPricing.output;
-    
+
     return inputCost + outputCost;
   }
-  
+
   getStatus() {
     return {
       dailySpend: this.dailySpend,
@@ -164,10 +177,157 @@ class CostTracker {
   }
 }
 
-// Initialize security components
+// Batch loader for AI requests
+class AIBatchLoader {
+  constructor() {
+    this.batchQueue = [];
+    this.batchTimer = null;
+    this.batchDelay = 50; // 50ms delay to accumulate requests
+    this.maxBatchSize = 10;
+  }
+
+  async loadBatch(keys) {
+    try {
+      // Group requests by model and rules
+      const groups = this.groupRequests(keys);
+      const results = new Map();
+
+      for (const [groupKey, requests] of groups) {
+        const [model, rulesHash] = groupKey.split(':');
+
+        // Create batch prompt
+        const batchPrompt = this.createBatchPrompt(requests);
+
+        // Make single API call for the batch
+        const response = await this.callBatchAPI(batchPrompt, model);
+
+        // Parse and distribute results
+        const parsedResults = this.parseBatchResponse(response, requests);
+
+        for (let i = 0; i < requests.length; i++) {
+          results.set(requests[i].key, parsedResults[i]);
+        }
+      }
+
+      // Return results in the same order as keys
+      return keys.map(key => results.get(key.key) || new Error('No result for key'));
+
+    } catch (error) {
+      logger.error('Batch loading error:', error);
+      // Return errors for all keys
+      return keys.map(() => error);
+    }
+  }
+
+  groupRequests(keys) {
+    const groups = new Map();
+
+    for (const key of keys) {
+      const groupKey = `${key.model}:${key.rulesHash}`;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, []);
+      }
+      groups.get(groupKey).push(key);
+    }
+
+    return groups;
+  }
+
+  createBatchPrompt(requests) {
+    const batchItems = requests.map((req, idx) => ({
+      id: idx,
+      content: req.content,
+      context: req.context
+    }));
+
+    return {
+      batch: true,
+      items: batchItems
+    };
+  }
+
+  async callBatchAPI(batchPrompt, model) {
+    // This will use the existing API call logic
+    // but with a special batch format
+    const messages = [
+      {
+        role: "system",
+        content: `You are a Discord moderation assistant. Analyze the following batch of messages and provide individual assessments.
+
+For each message in the batch, respond with a JSON object containing:
+- id: the message ID from the batch
+- isViolation: true/false
+- category: violation category
+- severity: severity level
+- confidence: 0.0-1.0
+- intent: question/accidental/intentional/normal
+- recommendedAction: action to take
+- reasoning: brief explanation
+
+Respond with a JSON array containing one object per message.`
+      },
+      {
+        role: "user",
+        content: JSON.stringify(batchPrompt)
+      }
+    ];
+
+    if (isOpenRouter) {
+      return await callOpenRouter(messages, model);
+    } else {
+      return await callAnthropic(messages, model);
+    }
+  }
+
+  parseBatchResponse(response, requests) {
+    try {
+      let responseText;
+
+      if (isOpenRouter) {
+        responseText = response.choices[0].message.content;
+      } else {
+        responseText = response.content[0].text;
+      }
+
+      const results = JSON.parse(responseText);
+
+      // Map results back to original requests
+      const resultMap = new Map();
+      for (const result of results) {
+        resultMap.set(result.id, result);
+      }
+
+      return requests.map((req, idx) => {
+        const result = resultMap.get(idx);
+        if (!result) {
+          throw new Error(`Missing result for batch item ${idx}`);
+        }
+        delete result.id; // Remove batch ID
+        return result;
+      });
+
+    } catch (error) {
+      logger.error('Failed to parse batch response:', error);
+      throw error;
+    }
+  }
+}
+
+// Initialize components
 const requestSigner = new RequestSigner();
 const costTracker = new CostTracker();
 const faultTolerantSystem = new FaultTolerantSystem();
+const aiBatchLoader = new AIBatchLoader();
+
+// Create DataLoader for request batching
+const requestBatcher = new DataLoader(
+  keys => aiBatchLoader.loadBatch(keys),
+  {
+    maxBatchSize: 10,
+    batchScheduleFn: (callback) => setTimeout(callback, 50),
+    cache: false // We handle caching separately
+  }
+);
 
 // Initialize circuit breakers for different AI providers
 const anthropicBreaker = new CircuitBreaker({
@@ -188,43 +348,43 @@ let isOpenRouter = false;
 
 if (AI_PROVIDER === 'ANTHROPIC') {
   const { AnthropicApi } = require('@anthropic-ai/sdk');
-  
+
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is required when using ANTHROPIC provider');
   }
-  
+
   // Enhanced API key validation
   if (!process.env.ANTHROPIC_API_KEY.startsWith('sk-ant-')) {
     throw new Error('Invalid Anthropic API key format');
   }
-  
+
   if (process.env.ANTHROPIC_API_KEY.length < 50) {
     throw new Error('Anthropic API key appears to be invalid (too short)');
   }
-  
+
   aiClient = new AnthropicApi({
     apiKey: process.env.ANTHROPIC_API_KEY,
     timeout: SECURITY_CONFIG.requestTimeout,
     maxRetries: 0 // Handle retries manually with circuit breaker
   });
-  
+
   logger.info('Using direct Anthropic API with enhanced security');
 } else if (AI_PROVIDER === 'OPENROUTER') {
   isOpenRouter = true;
-  
+
   if (!process.env.OPENROUTER_API_KEY) {
     throw new Error('OPENROUTER_API_KEY is required when using OPENROUTER provider');
   }
-  
+
   // Enhanced API key validation
   if (!process.env.OPENROUTER_API_KEY.startsWith('sk-or-v1-')) {
     throw new Error('Invalid OpenRouter API key format');
   }
-  
+
   if (process.env.OPENROUTER_API_KEY.length < 50) {
     throw new Error('OpenRouter API key appears to be invalid (too short)');
   }
-  
+
   logger.info('Using OpenRouter API with enhanced security');
 }
 
@@ -238,7 +398,7 @@ function validateAndSanitizeContent(content, context = 'general') {
         context
       });
     }
-    
+
     // Length validation
     if (content.length === 0) {
       throw SecurityValidator.createSecurityError('Content cannot be empty', {
@@ -246,7 +406,7 @@ function validateAndSanitizeContent(content, context = 'general') {
         context
       });
     }
-    
+
     if (content.length > SECURITY_CONFIG.maxContentLength) {
       throw SecurityValidator.createSecurityError('Content too long for processing', {
         code: 'CONTENT_TOO_LONG',
@@ -255,7 +415,7 @@ function validateAndSanitizeContent(content, context = 'general') {
         actualLength: content.length
       });
     }
-    
+
     // Use SecurityValidator for comprehensive sanitization
     return SecurityValidator.sanitizeMessageContent(content, SECURITY_CONFIG.maxContentLength);
   } catch (error) {
@@ -278,7 +438,7 @@ function validateModel(model, context = 'general') {
         context
       });
     }
-    
+
     if (model.length === 0 || model.length > SECURITY_CONFIG.maxModelNameLength) {
       throw SecurityValidator.createSecurityError('Invalid model name length', {
         code: 'INVALID_MODEL_LENGTH',
@@ -286,7 +446,7 @@ function validateModel(model, context = 'general') {
         maxLength: SECURITY_CONFIG.maxModelNameLength
       });
     }
-    
+
     // Enhanced model name validation
     if (!/^[a-zA-Z0-9\-\/:_\.]+$/.test(model)) {
       throw SecurityValidator.createSecurityError('Invalid model name format', {
@@ -294,7 +454,7 @@ function validateModel(model, context = 'general') {
         context
       });
     }
-    
+
     // Check for known malicious patterns
     const maliciousPatterns = [
       /javascript:/i,
@@ -304,14 +464,14 @@ function validateModel(model, context = 'general') {
       /\.\./,
       /\/\//
     ];
-    
+
     if (maliciousPatterns.some(pattern => pattern.test(model))) {
       throw SecurityValidator.createSecurityError('Potentially malicious model name detected', {
         code: 'MALICIOUS_MODEL_NAME',
         context
       });
     }
-    
+
     return sanitizeInput(model);
   } catch (error) {
     if (error.isSecurityError) {
@@ -345,12 +505,12 @@ function validateRules(rules, context = 'general') {
  */
 function buildModerationPrompt(serverRules) {
   const sanitizedRules = validateRules(serverRules);
-  
+
   // Prevent prompt injection by escaping potential control sequences
   const escapedRules = sanitizedRules
     .replace(/\n\n+/g, '\n\n') // Normalize line breaks
     .replace(/[^\x20-\x7E\n\r\t]/g, ''); // Remove non-printable characters
-  
+
   return `You are a Discord moderation assistant. Your task is to analyze messages for rule violations with fairness and accuracy.
 
 SERVER RULES:
@@ -397,7 +557,7 @@ function getModelForRisk(riskLevel) {
       validValues: ['low', 'medium', 'high']
     });
   }
-  
+
   if (AI_PROVIDER === 'ANTHROPIC') {
     const models = {
       low: 'claude-3-haiku-20240307',
@@ -411,7 +571,7 @@ function getModelForRisk(riskLevel) {
       medium: process.env.MEDIUM_RISK_MODEL || 'anthropic/claude-3-sonnet:beta',
       high: process.env.HIGH_RISK_MODEL || 'anthropic/claude-3-opus:beta'
     };
-    
+
     return validateModel(models[riskLevel]);
   }
 }
@@ -422,44 +582,44 @@ function getModelForRisk(riskLevel) {
 async function callOpenRouter(messages, model, options = {}) {
   const https = require('https');
   const { URL } = require('url');
-  
+
   try {
     // Enhanced input validation
     const validatedModel = validateModel(model, 'OpenRouter');
-    
+
     if (!Array.isArray(messages) || messages.length === 0) {
       throw SecurityValidator.createSecurityError('Messages must be a non-empty array', {
         code: 'INVALID_MESSAGES_ARRAY'
       });
     }
-    
+
     if (messages.length > 10) {
       throw SecurityValidator.createSecurityError('Too many messages in request', {
         code: 'TOO_MANY_MESSAGES',
         maxMessages: 10
       });
     }
-    
+
     // Enhanced URL validation to prevent SSRF
     const apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
     const parsedUrl = new URL(apiUrl);
-    
+
     if (parsedUrl.hostname !== 'openrouter.ai') {
       throw SecurityValidator.createSecurityError('Invalid API endpoint', {
         code: 'INVALID_ENDPOINT'
       });
     }
-    
+
     if (parsedUrl.protocol !== 'https:') {
       throw SecurityValidator.createSecurityError('Insecure protocol detected', {
         code: 'INSECURE_PROTOCOL'
       });
     }
-    
+
     // Prepare request with enhanced security
     const requestId = crypto.randomUUID();
     const timestamp = Date.now();
-    
+
     const requestBody = {
       model: validatedModel,
       messages: messages.map(msg => {
@@ -476,7 +636,7 @@ async function callOpenRouter(messages, model, options = {}) {
         signature: requestSigner.sign({ model: validatedModel, timestamp })
       }
     };
-    
+
     // Enhanced request options with security settings
     const requestOptions = {
       method: 'POST',
@@ -501,10 +661,10 @@ async function callOpenRouter(messages, model, options = {}) {
         honorCipherOrder: true
       })
     };
-    
+
     // Use secure fetch with additional protections
     const fetch = require('node-fetch');
-    
+
     const response = await fetch(apiUrl, {
       ...requestOptions,
       body: JSON.stringify(requestBody),
@@ -516,7 +676,7 @@ async function callOpenRouter(messages, model, options = {}) {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
-      
+
       // Log failed API call for audit
       await AuditLogger.logSecurityEvent({
         type: 'AI_API_CALL_FAILED',
@@ -527,7 +687,7 @@ async function callOpenRouter(messages, model, options = {}) {
         requestId,
         timestamp: Date.now()
       });
-      
+
       const error = new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
       error.status = response.status;
       error.response = errorText.substring(0, 500);
@@ -535,22 +695,22 @@ async function callOpenRouter(messages, model, options = {}) {
     }
 
     const jsonResponse = await response.json();
-    
+
     // Enhanced response validation
     if (!jsonResponse || typeof jsonResponse !== 'object') {
       throw new Error('Invalid response format from OpenRouter');
     }
-    
+
     if (!jsonResponse.choices || !Array.isArray(jsonResponse.choices) || jsonResponse.choices.length === 0) {
       throw new Error('No choices in OpenRouter response');
     }
-    
+
     // Validate response content
     const choice = jsonResponse.choices[0];
     if (!choice.message || !choice.message.content) {
       throw new Error('Invalid choice format in OpenRouter response');
     }
-    
+
     // Log successful API call
     await AuditLogger.log({
       action: 'AI_API_CALL_SUCCESS',
@@ -560,7 +720,7 @@ async function callOpenRouter(messages, model, options = {}) {
       tokensUsed: jsonResponse.usage?.total_tokens || 0,
       timestamp: Date.now()
     });
-    
+
     return jsonResponse;
   } catch (error) {
     // Enhanced error logging
@@ -571,7 +731,7 @@ async function callOpenRouter(messages, model, options = {}) {
       error: error.message,
       timestamp: Date.now()
     });
-    
+
     throw error;
   }
 }
@@ -582,13 +742,13 @@ async function callOpenRouter(messages, model, options = {}) {
 async function callAnthropic(messages, model, options = {}) {
   try {
     const validatedModel = validateModel(model, 'Anthropic');
-    
+
     if (!Array.isArray(messages) || messages.length === 0) {
       throw SecurityValidator.createSecurityError('Messages must be a non-empty array', {
         code: 'INVALID_MESSAGES_ARRAY'
       });
     }
-    
+
     // Convert and validate messages format for Anthropic
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages
@@ -597,16 +757,16 @@ async function callAnthropic(messages, model, options = {}) {
         role: msg.role === 'user' ? 'user' : 'user',
         content: validateAndSanitizeContent(msg.content, 'Anthropic')
       }));
-    
+
     if (userMessages.length === 0) {
       throw SecurityValidator.createSecurityError('At least one user message is required', {
         code: 'NO_USER_MESSAGES'
       });
     }
-    
+
     const requestId = crypto.randomUUID();
     const timestamp = Date.now();
-    
+
     const requestParams = {
       model: validatedModel,
       max_tokens: Math.min(SECURITY_CONFIG.maxTokens, parseInt(process.env.MAX_TOKENS) || SECURITY_CONFIG.maxTokens),
@@ -618,23 +778,23 @@ async function callAnthropic(messages, model, options = {}) {
         signature: requestSigner.sign({ model: validatedModel, timestamp })
       }
     };
-    
+
     if (systemMessage) {
       requestParams.system = validateAndSanitizeContent(systemMessage.content, 'Anthropic');
     }
-    
+
     const response = await aiClient.messages.create(requestParams);
-    
+
     // Enhanced response validation
     if (!response || !response.content || !Array.isArray(response.content) || response.content.length === 0) {
       throw new Error('Invalid response format from Anthropic');
     }
-    
+
     const textContent = response.content[0];
     if (!textContent || textContent.type !== 'text' || !textContent.text) {
       throw new Error('Invalid content format in Anthropic response');
     }
-    
+
     // Log successful API call
     await AuditLogger.log({
       action: 'AI_API_CALL_SUCCESS',
@@ -644,7 +804,7 @@ async function callAnthropic(messages, model, options = {}) {
       tokensUsed: (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0),
       timestamp: Date.now()
     });
-    
+
     return response;
   } catch (error) {
     await AuditLogger.logSecurityEvent({
@@ -654,7 +814,7 @@ async function callAnthropic(messages, model, options = {}) {
       error: error.message,
       timestamp: Date.now()
     });
-    
+
     throw error;
   }
 }
@@ -665,7 +825,7 @@ async function callAnthropic(messages, model, options = {}) {
 function validateAIResponse(response, provider) {
   try {
     let responseText;
-    
+
     if (provider === 'OpenRouter') {
       if (!response?.choices?.[0]?.message?.content) {
         throw new Error('Invalid OpenRouter response structure');
@@ -677,51 +837,51 @@ function validateAIResponse(response, provider) {
       }
       responseText = response.content[0].text;
     }
-    
+
     // Enhanced response validation
     if (!responseText || typeof responseText !== 'string') {
       throw new Error('Empty or invalid response text');
     }
-    
+
     if (responseText.length > 10000) {
       throw new Error('Response too long from AI provider');
     }
-    
+
     // Sanitize response before parsing
     const sanitizedResponse = sanitizeInput(responseText);
-    
+
     // Extract JSON from response (handle cases where there might be extra text)
     let jsonMatch = sanitizedResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('No JSON found in AI response');
     }
-    
+
     const analysisResult = JSON.parse(jsonMatch[0]);
-    
+
     // Enhanced structure validation
     if (typeof analysisResult !== 'object' || analysisResult === null) {
       throw new Error('Invalid response structure');
     }
-    
+
     // Validate and sanitize response fields with security checks
     const validatedResult = {
       isViolation: Boolean(analysisResult.isViolation),
-      category: ['Toxicity', 'Harassment', 'Spam', 'NSFW', 'Other'].includes(analysisResult.category) ? 
+      category: ['Toxicity', 'Harassment', 'Spam', 'NSFW', 'Other'].includes(analysisResult.category) ?
         analysisResult.category : null,
-      severity: ['None', 'Mild', 'Moderate', 'Severe'].includes(analysisResult.severity) ? 
+      severity: ['None', 'Mild', 'Moderate', 'Severe'].includes(analysisResult.severity) ?
         analysisResult.severity : null,
-      confidence: typeof analysisResult.confidence === 'number' && 
-        analysisResult.confidence >= 0 && analysisResult.confidence <= 1 ? 
+      confidence: typeof analysisResult.confidence === 'number' &&
+        analysisResult.confidence >= 0 && analysisResult.confidence <= 1 ?
         Number(analysisResult.confidence.toFixed(3)) : 0,
-      intent: ['question', 'accidental', 'intentional', 'normal'].includes(analysisResult.intent) ? 
+      intent: ['question', 'accidental', 'intentional', 'normal'].includes(analysisResult.intent) ?
         analysisResult.intent : 'normal',
-      recommendedAction: ['None', 'Flag', 'Warn', 'Mute', 'Kick', 'Ban'].includes(analysisResult.recommendedAction) ? 
+      recommendedAction: ['None', 'Flag', 'Warn', 'Mute', 'Kick', 'Ban'].includes(analysisResult.recommendedAction) ?
         analysisResult.recommendedAction : 'None',
-      reasoning: typeof analysisResult.reasoning === 'string' ? 
-        sanitizeInput(analysisResult.reasoning.substring(0, SECURITY_CONFIG.maxReasoningLength)) : 
+      reasoning: typeof analysisResult.reasoning === 'string' ?
+        sanitizeInput(analysisResult.reasoning.substring(0, SECURITY_CONFIG.maxReasoningLength)) :
         'No reasoning provided'
     };
-    
+
     // Additional validation: Check for suspicious patterns in reasoning
     const suspiciousPatterns = [
       /<script/i,
@@ -731,10 +891,10 @@ function validateAIResponse(response, provider) {
       /onclick/i,
       /onerror/i
     ];
-    
+
     if (suspiciousPatterns.some(pattern => pattern.test(validatedResult.reasoning))) {
       validatedResult.reasoning = 'Reasoning filtered for security';
-      
+
       AuditLogger.logSecurityEvent({
         type: 'SUSPICIOUS_AI_RESPONSE',
         provider,
@@ -742,7 +902,7 @@ function validateAIResponse(response, provider) {
         timestamp: Date.now()
       });
     }
-    
+
     return validatedResult;
   } catch (error) {
     AuditLogger.logSecurityEvent({
@@ -751,42 +911,42 @@ function validateAIResponse(response, provider) {
       error: error.message,
       timestamp: Date.now()
     });
-    
+
     throw error;
   }
 }
 
 /**
- * Enhanced main AI processing function with comprehensive security
+ * Enhanced main AI processing function with caching and batching
  */
 async function processWithAI(content, context, rules, model, options = {}) {
   const startTime = performance.now();
   let tokensUsed = 0;
   const requestId = crypto.randomUUID();
-  
+
   try {
     // Pre-processing security validation
     const sanitizedContent = validateAndSanitizeContent(content, 'processWithAI');
     const sanitizedRules = validateRules(rules, 'processWithAI');
     const validatedModel = validateModel(model, 'processWithAI');
-    
+
     // Enhanced context validation
     if (!Array.isArray(context)) {
       throw SecurityValidator.createSecurityError('Context must be an array', {
         code: 'INVALID_CONTEXT_TYPE'
       });
     }
-    
+
     if (context.length > SECURITY_CONFIG.maxContextItems) {
       context = context.slice(0, SECURITY_CONFIG.maxContextItems);
     }
-    
+
     // Sanitize context with enhanced validation
     const sanitizedContext = context.map((item, index) => {
       if (typeof item !== 'object' || item === null) {
         return {};
       }
-      
+
       try {
         return {
           id: item.id ? SecurityValidator.validateDiscordId(item.id.toString(), 'context') : '',
@@ -799,7 +959,94 @@ async function processWithAI(content, context, rules, model, options = {}) {
         return {};
       }
     }).filter(item => Object.keys(item).length > 0);
-    
+
+    // Content hash for caching and deduplication
+    const contentHash = crypto
+      .createHash('sha256')
+      .update(sanitizedContent + sanitizedRules + JSON.stringify(sanitizedContext))
+      .digest('hex');
+
+    // Check cache first
+    const cacheKey = `ai:${contentHash}:${validatedModel}`;
+    const cached = await aiCache.get(cacheKey);
+
+    if (cached && !options.skipCache) {
+      logger.debug('AI response cache hit', { contentHash, model: validatedModel });
+
+      // Update metrics for cached response
+      const endTime = performance.now();
+      const cachedResult = {
+        ...cached,
+        processingTimeMs: endTime - startTime,
+        cached: true,
+        requestId
+      };
+
+      // Log cache hit
+      await AuditLogger.log({
+        action: 'AI_CACHE_HIT',
+        contentHash,
+        model: validatedModel,
+        processingTimeMs: cachedResult.processingTimeMs,
+        requestId,
+        timestamp: Date.now()
+      });
+
+      return cachedResult;
+    }
+
+    // Use batching for non-urgent requests
+    if (options.useBatching && !options.urgent) {
+      const rulesHash = crypto.createHash('sha256').update(sanitizedRules).digest('hex');
+
+      const batchKey = {
+        key: requestId,
+        content: sanitizedContent,
+        context: sanitizedContext,
+        model: validatedModel,
+        rulesHash
+      };
+
+      try {
+        const batchResult = await requestBatcher.load(batchKey);
+
+        if (batchResult instanceof Error) {
+          throw batchResult;
+        }
+
+        const endTime = performance.now();
+        const finalResult = {
+          ...batchResult,
+          processingTimeMs: endTime - startTime,
+          modelUsed: validatedModel,
+          provider: AI_PROVIDER,
+          requestId,
+          contentHash,
+          batched: true,
+          securityValidated: true
+        };
+
+        // Cache the result
+        await aiCache.set(cacheKey, finalResult, 300); // 5 minutes
+
+        return finalResult;
+
+      } catch (batchError) {
+        logger.warn('Batch processing failed, falling back to individual request:', batchError);
+        // Continue with regular processing
+      }
+    }
+
+    // Log processing attempt
+    await AuditLogger.log({
+      action: 'AI_PROCESSING_STARTED',
+      contentHash,
+      model: validatedModel,
+      provider: AI_PROVIDER,
+      requestId,
+      timestamp: Date.now()
+    });
+
     // Prepare secure messages
     const messages = [
       {
@@ -811,27 +1058,11 @@ async function processWithAI(content, context, rules, model, options = {}) {
         content: `Channel context: ${JSON.stringify(sanitizedContext)}\n\nMessage to analyze: ${sanitizedContent}`
       }
     ];
-    
-    // Content hash for caching and deduplication
-    const contentHash = crypto
-      .createHash('sha256')
-      .update(sanitizedContent + sanitizedRules)
-      .digest('hex');
-    
-    // Log processing attempt
-    await AuditLogger.log({
-      action: 'AI_PROCESSING_STARTED',
-      contentHash,
-      model: validatedModel,
-      provider: AI_PROVIDER,
-      requestId,
-      timestamp: Date.now()
-    });
-    
+
     let response;
     let responseText;
     let provider = AI_PROVIDER;
-    
+
     // Use fault-tolerant system for AI processing
     const result = await faultTolerantSystem.executeWithFallback('ai', {
       content: sanitizedContent,
@@ -841,14 +1072,14 @@ async function processWithAI(content, context, rules, model, options = {}) {
       messages,
       requestId
     });
-    
+
     if (result.usedFallback) {
       provider = result.provider;
       response = result.response;
     } else {
       // Execute with circuit breaker
       const breaker = isOpenRouter ? openrouterBreaker : anthropicBreaker;
-      
+
       response = await breaker.execute(async () => {
         if (isOpenRouter) {
           return await callOpenRouter(messages, validatedModel, { requestId });
@@ -857,17 +1088,17 @@ async function processWithAI(content, context, rules, model, options = {}) {
         }
       });
     }
-    
+
     // Validate AI response
     const validatedResponse = validateAIResponse(response, provider);
-    
+
     // Extract token usage
     if (isOpenRouter) {
       tokensUsed = response.usage?.total_tokens || 0;
     } else {
       tokensUsed = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
     }
-    
+
     // Track costs
     await costTracker.track({
       model: validatedModel,
@@ -875,10 +1106,10 @@ async function processWithAI(content, context, rules, model, options = {}) {
       output_tokens: response.usage?.output_tokens || response.usage?.completion_tokens || Math.floor(tokensUsed * 0.3),
       request_id: requestId
     });
-    
+
     const endTime = performance.now();
     const processingTimeMs = endTime - startTime;
-    
+
     // Prepare final result with security metadata
     const finalResult = {
       ...validatedResponse,
@@ -890,7 +1121,10 @@ async function processWithAI(content, context, rules, model, options = {}) {
       contentHash,
       securityValidated: true
     };
-    
+
+    // Cache the result
+    await aiCache.set(cacheKey, finalResult, 300); // 5 minutes
+
     // Log successful processing
     await AuditLogger.log({
       action: 'AI_PROCESSING_COMPLETED',
@@ -904,13 +1138,13 @@ async function processWithAI(content, context, rules, model, options = {}) {
       requestId,
       timestamp: Date.now()
     });
-    
+
     return finalResult;
-    
+
   } catch (error) {
     const endTime = performance.now();
     const processingTimeMs = endTime - startTime;
-    
+
     // Enhanced error handling with security context
     await AuditLogger.logSecurityEvent({
       type: 'AI_PROCESSING_ERROR',
@@ -922,14 +1156,14 @@ async function processWithAI(content, context, rules, model, options = {}) {
       processingTimeMs,
       timestamp: Date.now()
     });
-    
+
     errorManager.handleError(error, AI_PROVIDER.toLowerCase(), {
       operation: 'processWithAI',
       contentLength: content?.length || 0,
       model: model,
       requestId
     });
-    
+
     // Secure fallback response
     return {
       isViolation: false,
@@ -971,7 +1205,7 @@ function getAvailableModels() {
     const lowModel = process.env.LOW_RISK_MODEL || 'anthropic/claude-3-haiku:beta';
     const mediumModel = process.env.MEDIUM_RISK_MODEL || 'anthropic/claude-3-sonnet:beta';
     const highModel = process.env.HIGH_RISK_MODEL || 'anthropic/claude-3-opus:beta';
-    
+
     return {
       low: [lowModel, 'openai/gpt-3.5-turbo', 'google/gemini-pro'],
       medium: [mediumModel, 'openai/gpt-4-turbo-preview', 'anthropic/claude-2'],
@@ -1023,7 +1257,7 @@ async function healthCheck() {
     lastCheck: new Date().toISOString(),
     errors: []
   };
-  
+
   try {
     // Test a simple validation
     validateAndSanitizeContent('test', 'healthCheck');
@@ -1032,21 +1266,21 @@ async function healthCheck() {
     status.healthy = false;
     status.errors.push(`Validation test failed: ${error.message}`);
   }
-  
+
   // Check circuit breaker status
   const breaker = isOpenRouter ? openrouterBreaker : anthropicBreaker;
   if (breaker.getState() === 'open') {
     status.healthy = false;
     status.errors.push('Circuit breaker is open');
   }
-  
+
   // Check cost limits
   const costStatus = costTracker.getStatus();
   if (costStatus.percentUsed > 90) {
     status.healthy = false;
     status.errors.push('Near daily spending limit');
   }
-  
+
   return status;
 }
 

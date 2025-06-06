@@ -20,12 +20,12 @@ class TokenBucket {
 
   consume(tokens = 1) {
     this.refill();
-    
+
     if (this.tokens >= tokens) {
       this.tokens -= tokens;
       return true;
     }
-    
+
     return false;
   }
 
@@ -33,7 +33,7 @@ class TokenBucket {
     const now = Date.now();
     const timePassed = (now - this.lastRefill) / 1000;
     const tokensToAdd = timePassed * this.refillRate;
-    
+
     this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
     this.lastRefill = now;
   }
@@ -45,10 +45,10 @@ class TokenBucket {
 
   getRetryAfter() {
     if (this.tokens >= 1) return 0;
-    
+
     const tokensNeeded = 1 - this.tokens;
     const secondsToWait = tokensNeeded / this.refillRate;
-    
+
     return Math.ceil(secondsToWait * 1000);
   }
 }
@@ -59,52 +59,52 @@ class TokenBucket {
 class AdvancedRateLimiter extends EventEmitter {
   constructor(options = {}) {
     super();
-    
+
     this.config = this.validateConfig({
       global: {
         window: options.global?.window || 60000,
         max: options.global?.max || 10000
       },
-      
+
       perIP: {
         window: options.perIP?.window || 60000,
         max: options.perIP?.max || 100,
         blockDuration: options.perIP?.blockDuration || 3600000
       },
-      
+
       perUser: {
         window: options.perUser?.window || 60000,
         max: options.perUser?.max || 500
       },
-      
+
       perServer: {
         window: options.perServer?.window || 60000,
         max: options.perServer?.max || 1000
       },
-      
+
       endpoints: options.endpoints || {
         '/api/login': { window: 300000, max: 5, blockDuration: 1800000 },
         '/api/servers/:serverId/config': { window: 60000, max: 30 },
         '/api/servers/:serverId/stats': { window: 60000, max: 60 },
         '/api/moderation/analyze': { window: 60000, max: 100 }
       },
-      
+
       adaptive: {
         enabled: options.adaptive?.enabled !== false,
         newUserMultiplier: options.adaptive?.newUserMultiplier || 0.5,
         trustedUserMultiplier: options.adaptive?.trustedUserMultiplier || 2.0,
         violationMultiplier: options.adaptive?.violationMultiplier || 0.3
       },
-      
+
       ddos: {
         enabled: options.ddos?.enabled !== false,
         threshold: options.ddos?.threshold || 1000,
         blockDuration: options.ddos?.blockDuration || 7200000,
         suspicionThreshold: options.ddos?.suspicionThreshold || 0.7
       },
-      
+
       redis: options.redis || null,
-      
+
       // New: Enhanced pattern detection
       patternDetection: {
         enabled: options.patternDetection?.enabled !== false,
@@ -112,14 +112,14 @@ class AdvancedRateLimiter extends EventEmitter {
         minimumRequests: options.patternDetection?.minimumRequests || 10
       }
     });
-    
+
     this.buckets = new Map();
     this.blacklist = new Map();
     this.whitelist = new Set();
     this.suspicionScores = new Map();
     this.patterns = new Map();
     this.userTrustLevels = new Map();
-    
+
     this.stats = {
       allowed: 0,
       blocked: 0,
@@ -127,9 +127,9 @@ class AdvancedRateLimiter extends EventEmitter {
       ddosAttempts: 0,
       patternAnomalies: 0
     };
-    
+
     this.redisHealthy = false;
-    
+
     this.initializeRedis();
     this.startCleanup();
     this.startPatternAnalysis();
@@ -140,15 +140,15 @@ class AdvancedRateLimiter extends EventEmitter {
    */
   validateConfig(config) {
     const errors = [];
-    
+
     if (config.global.max <= 0) errors.push('Global max must be positive');
     if (config.perIP.max <= 0) errors.push('Per-IP max must be positive');
     if (config.ddos.threshold <= 0) errors.push('DDoS threshold must be positive');
-    
+
     if (errors.length > 0) {
       throw new Error(`Invalid rate limiter configuration: ${errors.join(', ')}`);
     }
-    
+
     return config;
   }
 
@@ -159,22 +159,22 @@ class AdvancedRateLimiter extends EventEmitter {
     if (this.config.redis) {
       try {
         this.redis = this.config.redis;
-        
+
         // Test connection
         await this.redis.ping();
         this.redisHealthy = true;
-        
+
         // Monitor Redis health
         this.redis.on('error', (err) => {
           logger.error('Redis error:', err);
           this.redisHealthy = false;
         });
-        
+
         this.redis.on('connect', () => {
           logger.info('Redis connected');
           this.redisHealthy = true;
         });
-        
+
         logger.info('Rate limiter connected to Redis');
       } catch (error) {
         logger.error('Failed to connect to Redis for rate limiting:', error);
@@ -191,7 +191,7 @@ class AdvancedRateLimiter extends EventEmitter {
     return async (req, res, next) => {
       try {
         const result = await this.checkLimit(req);
-        
+
         if (!result.allowed) {
           // Add rate limit headers
           res.set({
@@ -200,26 +200,26 @@ class AdvancedRateLimiter extends EventEmitter {
             'X-RateLimit-Reset': new Date(Date.now() + (result.retryAfter || 60000)).toISOString(),
             'Retry-After': Math.ceil((result.retryAfter || 60000) / 1000)
           });
-          
+
           const responseData = {
             error: 'Rate limit exceeded',
             message: result.reason || 'Too many requests',
             retryAfter: result.retryAfter
           };
-          
+
           if (options.includeDetails) {
             responseData.details = result.details;
           }
-          
+
           return res.status(429).json(responseData);
         }
-        
+
         // Add current rate limit info to headers
         res.set({
           'X-RateLimit-Limit': this.getLimit(req),
           'X-RateLimit-Remaining': result.details?.[0]?.result?.remaining || 0
         });
-        
+
         next();
       } catch (error) {
         logger.error('Rate limiter middleware error:', error);
@@ -235,23 +235,23 @@ class AdvancedRateLimiter extends EventEmitter {
   getLimit(req) {
     const identifiers = this.extractIdentifiers(req);
     const endpointConfig = this.findEndpointConfig(identifiers.endpoint);
-    
+
     if (endpointConfig) {
       return endpointConfig.max;
     }
-    
+
     return this.config.perIP.max;
   }
 
   async checkLimit(req) {
     try {
       const identifiers = this.extractIdentifiers(req);
-      
+
       if (this.whitelist.has(identifiers.ip)) {
         this.stats.allowed++;
         return { allowed: true, whitelisted: true };
       }
-      
+
       if (await this.isBlacklisted(identifiers.ip)) {
         this.stats.blocked++;
         this.stats.blacklisted++;
@@ -261,25 +261,25 @@ class AdvancedRateLimiter extends EventEmitter {
           retryAfter: this.config.perIP.blockDuration
         };
       }
-      
+
       const checks = await this.performChecks(identifiers, req);
       const result = this.analyzeResults(checks, identifiers);
-      
+
       // Enhanced pattern tracking
       await this.trackAdvancedPattern(identifiers, result);
-      
+
       if (result.allowed) {
         this.stats.allowed++;
       } else {
         this.stats.blocked++;
-        
+
         if (this.config.ddos.enabled) {
           await this.checkForDDoS(identifiers, result);
         }
       }
-      
+
       return result;
-      
+
     } catch (error) {
       logger.error('Rate limit check error:', error);
       return { allowed: true, error: true };
@@ -304,11 +304,11 @@ class AdvancedRateLimiter extends EventEmitter {
     if (forwarded) {
       return forwarded.split(',')[0].trim();
     }
-    
-    return req.headers['x-real-ip'] || 
-           req.connection?.remoteAddress || 
-           req.ip || 
-           'unknown';
+
+    return req.headers['x-real-ip'] ||
+      req.connection?.remoteAddress ||
+      req.ip ||
+      'unknown';
   }
 
   normalizeEndpoint(path) {
@@ -320,43 +320,43 @@ class AdvancedRateLimiter extends EventEmitter {
 
   async performChecks(identifiers, req) {
     const checks = [];
-    
+
     checks.push({
       type: 'global',
       result: await this.checkGlobalLimit()
     });
-    
+
     checks.push({
       type: 'ip',
       result: await this.checkIPLimit(identifiers.ip)
     });
-    
+
     if (identifiers.userId) {
       checks.push({
         type: 'user',
         result: await this.checkUserLimit(identifiers.userId)
       });
     }
-    
+
     if (identifiers.serverId) {
       checks.push({
         type: 'server',
         result: await this.checkServerLimit(identifiers.serverId)
       });
     }
-    
+
     checks.push({
       type: 'endpoint',
       result: await this.checkEndpointLimit(identifiers.endpoint, identifiers.userId || identifiers.ip)
     });
-    
+
     return checks;
   }
 
   async checkGlobalLimit() {
     const key = 'global';
     const bucket = this.getOrCreateBucket(key, this.config.global.max, this.config.global.max / (this.config.global.window / 1000));
-    
+
     return {
       allowed: bucket.consume(),
       remaining: bucket.getTokens(),
@@ -367,17 +367,17 @@ class AdvancedRateLimiter extends EventEmitter {
   async checkIPLimit(ip) {
     const key = `ip:${ip}`;
     const config = this.config.perIP;
-    
+
     const suspicionScore = await this.getSuspicionScore(ip);
     const multiplier = this.getAdaptiveMultiplier(suspicionScore);
-    
+
     const adjustedMax = Math.floor(config.max * multiplier);
     const bucket = this.getOrCreateBucket(key, adjustedMax, adjustedMax / (config.window / 1000));
-    
+
     const allowed = bucket.consume();
-    
+
     await this.trackIPPattern(ip, allowed);
-    
+
     return {
       allowed,
       remaining: bucket.getTokens(),
@@ -389,13 +389,13 @@ class AdvancedRateLimiter extends EventEmitter {
   async checkUserLimit(userId) {
     const key = `user:${userId}`;
     const config = this.config.perUser;
-    
+
     const trustLevel = await this.getUserTrustLevel(userId);
     const multiplier = this.getAdaptiveMultiplier(trustLevel);
-    
+
     const adjustedMax = Math.floor(config.max * multiplier);
     const bucket = this.getOrCreateBucket(key, adjustedMax, adjustedMax / (config.window / 1000));
-    
+
     return {
       allowed: bucket.consume(),
       remaining: bucket.getTokens(),
@@ -407,9 +407,9 @@ class AdvancedRateLimiter extends EventEmitter {
   async checkServerLimit(serverId) {
     const key = `server:${serverId}`;
     const config = this.config.perServer;
-    
+
     const bucket = this.getOrCreateBucket(key, config.max, config.max / (config.window / 1000));
-    
+
     return {
       allowed: bucket.consume(),
       remaining: bucket.getTokens(),
@@ -422,14 +422,14 @@ class AdvancedRateLimiter extends EventEmitter {
     if (!endpointConfig) {
       return { allowed: true };
     }
-    
+
     const key = `endpoint:${endpoint}:${identifier}`;
     const bucket = this.getOrCreateBucket(
       key,
       endpointConfig.max,
       endpointConfig.max / (endpointConfig.window / 1000)
     );
-    
+
     return {
       allowed: bucket.consume(),
       remaining: bucket.getTokens(),
@@ -442,14 +442,14 @@ class AdvancedRateLimiter extends EventEmitter {
     if (this.config.endpoints[endpoint]) {
       return this.config.endpoints[endpoint];
     }
-    
+
     for (const [pattern, config] of Object.entries(this.config.endpoints)) {
       const regex = new RegExp('^' + pattern.replace(/:\w+/g, '[^/]+') + '$');
       if (regex.test(endpoint)) {
         return config;
       }
     }
-    
+
     return null;
   }
 
@@ -457,14 +457,14 @@ class AdvancedRateLimiter extends EventEmitter {
     if (!this.buckets.has(key)) {
       this.buckets.set(key, new TokenBucket(capacity, refillRate));
     }
-    
+
     return this.buckets.get(key);
   }
 
   analyzeResults(checks, identifiers) {
     let mostRestrictive = null;
     let reason = null;
-    
+
     for (const check of checks) {
       if (!check.result.allowed) {
         if (!mostRestrictive || check.result.retryAfter > mostRestrictive.retryAfter) {
@@ -473,7 +473,7 @@ class AdvancedRateLimiter extends EventEmitter {
         }
       }
     }
-    
+
     if (mostRestrictive) {
       return {
         allowed: false,
@@ -482,7 +482,7 @@ class AdvancedRateLimiter extends EventEmitter {
         details: checks
       };
     }
-    
+
     return {
       allowed: true,
       details: checks
@@ -493,7 +493,7 @@ class AdvancedRateLimiter extends EventEmitter {
     if (!this.config.adaptive.enabled) {
       return 1.0;
     }
-    
+
     if (score < 0.3) {
       return this.config.adaptive.trustedUserMultiplier;
     } else if (score > 0.7) {
@@ -507,27 +507,27 @@ class AdvancedRateLimiter extends EventEmitter {
     if (this.suspicionScores.has(ip)) {
       return this.suspicionScores.get(ip);
     }
-    
+
     const patterns = this.patterns.get(ip) || {};
     const score = this.calculateSuspicionScore(patterns);
-    
+
     this.suspicionScores.set(ip, score);
     return score;
   }
 
   calculateSuspicionScore(patterns) {
     let score = 0;
-    
+
     if (patterns.requestRate > 100) score += 0.3;
     if (patterns.failedAttempts > 10) score += 0.3;
     if (patterns.suspiciousPatterns > 5) score += 0.2;
     if (patterns.geoAnomalies > 0) score += 0.2;
-    
+
     // Enhanced: Check for bot-like behavior
     if (patterns.uniformIntervals > 10) score += 0.2;
     if (patterns.sequentialRequests > 20) score += 0.2;
     if (patterns.distinctUserAgents > 10) score += 0.1;
-    
+
     return Math.min(1.0, score);
   }
 
@@ -536,7 +536,7 @@ class AdvancedRateLimiter extends EventEmitter {
    */
   async trackAdvancedPattern(identifiers, result) {
     const ip = identifiers.ip;
-    
+
     if (!this.patterns.has(ip)) {
       this.patterns.set(ip, {
         requestRate: 0,
@@ -553,42 +553,42 @@ class AdvancedRateLimiter extends EventEmitter {
         lastSeen: Date.now()
       });
     }
-    
+
     const pattern = this.patterns.get(ip);
     const now = Date.now();
-    
+
     pattern.lastSeen = now;
     pattern.requestRate++;
     pattern.requestTimes.push(now);
     pattern.endpoints.add(identifiers.endpoint);
     pattern.methods.add(identifiers.method);
     pattern.distinctUserAgents.add(identifiers.userAgent);
-    
+
     // Keep only last 100 request times
     if (pattern.requestTimes.length > 100) {
       pattern.requestTimes = pattern.requestTimes.slice(-100);
     }
-    
+
     if (!result.allowed) {
       pattern.failedAttempts++;
     }
-    
+
     // Detect uniform intervals (bot behavior)
     if (pattern.requestTimes.length >= 5) {
       const intervals = [];
       for (let i = 1; i < pattern.requestTimes.length; i++) {
-        intervals.push(pattern.requestTimes[i] - pattern.requestTimes[i-1]);
+        intervals.push(pattern.requestTimes[i] - pattern.requestTimes[i - 1]);
       }
-      
+
       const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
       const variance = intervals.reduce((acc, interval) => acc + Math.pow(interval - avgInterval, 2), 0) / intervals.length;
-      
+
       // Low variance indicates uniform timing (bot-like)
       if (variance < 1000 && avgInterval < 10000) { // Less than 1 second variance, less than 10 second intervals
         pattern.uniformIntervals++;
       }
     }
-    
+
     // Detect sequential request patterns
     if (pattern.endpoints.size === 1 && pattern.requestRate > 10) {
       pattern.sequentialRequests++;
@@ -607,10 +607,10 @@ class AdvancedRateLimiter extends EventEmitter {
     if (this.userTrustLevels.has(userId)) {
       return this.userTrustLevels.get(userId);
     }
-    
+
     // Default trust level - can be enhanced with database lookup
     let trustLevel = 0.5;
-    
+
     // Check Redis for stored trust level
     if (this.redis && this.redisHealthy) {
       try {
@@ -622,7 +622,7 @@ class AdvancedRateLimiter extends EventEmitter {
         logger.error('Failed to get trust level from Redis:', error);
       }
     }
-    
+
     this.userTrustLevels.set(userId, trustLevel);
     return trustLevel;
   }
@@ -633,7 +633,7 @@ class AdvancedRateLimiter extends EventEmitter {
   async updateUserTrustLevel(userId, level) {
     const clampedLevel = Math.max(0, Math.min(1, level));
     this.userTrustLevels.set(userId, clampedLevel);
-    
+
     if (this.redis && this.redisHealthy) {
       try {
         await this.redis.setex(`trust:${userId}`, 86400 * 7, clampedLevel.toString()); // 7 days
@@ -648,7 +648,7 @@ class AdvancedRateLimiter extends EventEmitter {
    */
   startPatternAnalysis() {
     if (!this.config.patternDetection.enabled) return;
-    
+
     this.patternInterval = setInterval(() => {
       this.analyzePatterns();
     }, this.config.patternDetection.analysisWindow);
@@ -660,25 +660,25 @@ class AdvancedRateLimiter extends EventEmitter {
   async analyzePatterns() {
     const now = Date.now();
     const analysisWindow = this.config.patternDetection.analysisWindow;
-    
+
     for (const [ip, pattern] of this.patterns.entries()) {
       if (pattern.requestRate < this.config.patternDetection.minimumRequests) {
         continue;
       }
-      
+
       // Check for anomalies
       const anomalies = this.detectAnomalies(pattern);
-      
+
       if (anomalies.length > 0) {
         this.stats.patternAnomalies++;
-        
+
         this.emit('patternAnomaly', {
           ip,
           anomalies,
           pattern: this.sanitizePattern(pattern),
           timestamp: now
         });
-        
+
         // Auto-adjust suspicion score
         const currentScore = await this.getSuspicionScore(ip);
         const newScore = Math.min(1.0, currentScore + anomalies.length * 0.1);
@@ -692,33 +692,33 @@ class AdvancedRateLimiter extends EventEmitter {
    */
   detectAnomalies(pattern) {
     const anomalies = [];
-    
+
     // High request rate
     if (pattern.requestRate > this.config.ddos.threshold * 0.5) {
       anomalies.push('HIGH_REQUEST_RATE');
     }
-    
+
     // Uniform timing (bot behavior)
     if (pattern.uniformIntervals > 10) {
       anomalies.push('UNIFORM_TIMING');
     }
-    
+
     // Too many user agents from same IP
     if (pattern.distinctUserAgents.size > 20) {
       anomalies.push('MULTIPLE_USER_AGENTS');
     }
-    
+
     // High failure rate
     const failureRate = pattern.failedAttempts / pattern.requestRate;
     if (failureRate > 0.5) {
       anomalies.push('HIGH_FAILURE_RATE');
     }
-    
+
     // Scanning behavior (many endpoints)
     if (pattern.endpoints.size > 50) {
       anomalies.push('ENDPOINT_SCANNING');
     }
-    
+
     return anomalies;
   }
 
@@ -742,12 +742,12 @@ class AdvancedRateLimiter extends EventEmitter {
   async checkForDDoS(identifiers, result) {
     const ip = identifiers.ip;
     const pattern = this.patterns.get(ip) || {};
-    
+
     if (pattern.requestRate > this.config.ddos.threshold) {
       logger.warn('Potential DDoS detected from IP:', ip);
-      
+
       const threatLevel = this.calculateThreatLevel(pattern);
-      
+
       if (threatLevel > this.config.ddos.suspicionThreshold) {
         await this.handleDDoSAttempt(ip, threatLevel);
         this.stats.ddosAttempts++;
@@ -763,7 +763,7 @@ class AdvancedRateLimiter extends EventEmitter {
       patterns: Math.min(1, pattern.suspiciousPatterns / 10),
       uniformity: Math.min(1, pattern.uniformIntervals / 20)
     };
-    
+
     return (
       factors.requestRate * 0.3 +
       factors.failureRate * 0.2 +
@@ -779,33 +779,33 @@ class AdvancedRateLimiter extends EventEmitter {
       threatLevel,
       pattern: this.sanitizePattern(this.patterns.get(ip))
     });
-    
+
     await this.blacklistIP(ip, 'DDoS attempt', this.config.ddos.blockDuration);
-    
+
     this.emit('ddosDetected', {
       ip,
       threatLevel,
       timestamp: Date.now()
     });
-    
+
     this.patterns.delete(ip);
     this.suspicionScores.delete(ip);
   }
 
   async blacklistIP(ip, reason, duration = null) {
     const expiry = duration ? Date.now() + duration : null;
-    
+
     this.blacklist.set(ip, {
       reason,
       timestamp: Date.now(),
       expiry
     });
-    
+
     if (this.redis && this.redisHealthy) {
       try {
         const key = `blacklist:${ip}`;
         const value = JSON.stringify({ reason, timestamp: Date.now(), expiry });
-        
+
         if (duration) {
           await this.redis.setex(key, Math.ceil(duration / 1000), value);
         } else {
@@ -815,7 +815,7 @@ class AdvancedRateLimiter extends EventEmitter {
         logger.error('Failed to store blacklist in Redis:', error);
       }
     }
-    
+
     logger.info('IP blacklisted', { ip, reason, duration });
   }
 
@@ -828,12 +828,12 @@ class AdvancedRateLimiter extends EventEmitter {
         this.blacklist.delete(ip);
       }
     }
-    
+
     if (this.redis && this.redisHealthy) {
       try {
         const key = `blacklist:${ip}`;
         const value = await this.redis.get(key);
-        
+
         if (value) {
           const entry = JSON.parse(value);
           this.blacklist.set(ip, entry);
@@ -843,7 +843,7 @@ class AdvancedRateLimiter extends EventEmitter {
         logger.error('Failed to check blacklist in Redis:', error);
       }
     }
-    
+
     return false;
   }
 
@@ -859,7 +859,7 @@ class AdvancedRateLimiter extends EventEmitter {
 
   async removeFromBlacklist(ip) {
     this.blacklist.delete(ip);
-    
+
     if (this.redis && this.redisHealthy) {
       try {
         await this.redis.del(`blacklist:${ip}`);
@@ -867,7 +867,7 @@ class AdvancedRateLimiter extends EventEmitter {
         logger.error('Failed to remove from Redis blacklist:', error);
       }
     }
-    
+
     logger.info('IP removed from blacklist', { ip });
   }
 
@@ -880,7 +880,13 @@ class AdvancedRateLimiter extends EventEmitter {
   cleanup() {
     const now = Date.now();
     let cleaned = 0;
-    
+    const memoryUsage = process.memoryUsage();
+    const memoryPressure = memoryUsage.heapUsed / memoryUsage.heapTotal;
+
+    // More aggressive cleanup under memory pressure
+    const patternExpiryTime = memoryPressure > 0.8 ? 1800000 : 3600000; // 30 min vs 1 hour
+    const bucketExpiryTime = memoryPressure > 0.8 ? 300000 : 600000; // 5 min vs 10 min
+
     // Clean up blacklist
     for (const [ip, entry] of this.blacklist.entries()) {
       if (entry.expiry && entry.expiry < now) {
@@ -888,26 +894,27 @@ class AdvancedRateLimiter extends EventEmitter {
         cleaned++;
       }
     }
-    
+
     // Clean up old patterns
-    const patternExpiry = now - 3600000;
+    const patternExpiry = now - patternExpiryTime;
     for (const [ip, pattern] of this.patterns.entries()) {
-      if (pattern.lastSeen < patternExpiry) {
+      if (pattern.lastSeen < patternExpiry ||
+        (memoryPressure > 0.9 && pattern.requestRate < 10)) {
         this.patterns.delete(ip);
         this.suspicionScores.delete(ip);
         cleaned++;
       }
     }
-    
+
     // Clean up old buckets
-    const bucketExpiry = now - 600000;
+    const bucketExpiry = now - bucketExpiryTime;
     for (const [key, bucket] of this.buckets.entries()) {
       if (bucket.lastRefill < bucketExpiry) {
         this.buckets.delete(key);
         cleaned++;
       }
     }
-    
+
     // Clean up trust levels
     const trustExpiry = now - 86400000 * 7; // 7 days
     for (const [userId, timestamp] of this.userTrustLevels.entries()) {
@@ -916,9 +923,59 @@ class AdvancedRateLimiter extends EventEmitter {
         cleaned++;
       }
     }
-    
+
+    // Enforce maximum map sizes under memory pressure
+    if (memoryPressure > 0.8) {
+      this.enforceMaxMapSizes();
+    }
+
     if (cleaned > 0) {
-      logger.debug(`Rate limiter cleanup: removed ${cleaned} expired entries`);
+      logger.debug(`Rate limiter cleanup: removed ${cleaned} expired entries (memory pressure: ${(memoryPressure * 100).toFixed(1)}%)`);
+    }
+
+    // Emit memory stats for monitoring
+    this.emit('memoryStats', {
+      heapUsed: memoryUsage.heapUsed,
+      heapTotal: memoryUsage.heapTotal,
+      pressure: memoryPressure,
+      maps: {
+        buckets: this.buckets.size,
+        patterns: this.patterns.size,
+        blacklist: this.blacklist.size,
+        whitelist: this.whitelist.size,
+        suspicionScores: this.suspicionScores.size,
+        userTrustLevels: this.userTrustLevels.size
+      }
+    });
+  }
+
+  /**
+   * Enforce maximum map sizes to prevent unbounded growth
+   */
+  enforceMaxMapSizes() {
+    const maxBuckets = 10000;
+    const maxPatterns = 5000;
+    const maxScores = 5000;
+
+    // Remove oldest buckets if over limit
+    if (this.buckets.size > maxBuckets) {
+      const sorted = Array.from(this.buckets.entries())
+        .sort((a, b) => a[1].lastRefill - b[1].lastRefill);
+      const toRemove = sorted.slice(0, this.buckets.size - maxBuckets);
+      for (const [key] of toRemove) {
+        this.buckets.delete(key);
+      }
+    }
+
+    // Remove least active patterns if over limit
+    if (this.patterns.size > maxPatterns) {
+      const sorted = Array.from(this.patterns.entries())
+        .sort((a, b) => a[1].requestRate - b[1].requestRate);
+      const toRemove = sorted.slice(0, this.patterns.size - maxPatterns);
+      for (const [key] of toRemove) {
+        this.patterns.delete(key);
+        this.suspicionScores.delete(key);
+      }
     }
   }
 
@@ -940,7 +997,7 @@ class AdvancedRateLimiter extends EventEmitter {
     this.patterns.clear();
     this.suspicionScores.clear();
     this.userTrustLevels.clear();
-    
+
     this.stats = {
       allowed: 0,
       blocked: 0,
@@ -948,7 +1005,7 @@ class AdvancedRateLimiter extends EventEmitter {
       ddosAttempts: 0,
       patternAnomalies: 0
     };
-    
+
     logger.info('Rate limiter reset');
   }
 
@@ -964,30 +1021,30 @@ class AdvancedRateLimiter extends EventEmitter {
       suspiciousIPs: [],
       patternAnomalies: []
     };
-    
+
     // Top offenders
     const offenders = Array.from(this.patterns.entries())
       .sort((a, b) => b[1].failedAttempts - a[1].failedAttempts)
       .slice(0, 10);
-    
+
     report.topOffenders = offenders.map(([ip, pattern]) => ({
       ip,
       ...this.sanitizePattern(pattern),
       suspicionScore: this.suspicionScores.get(ip) || 0
     }));
-    
+
     // Suspicious IPs
     const suspicious = Array.from(this.suspicionScores.entries())
       .filter(([ip, score]) => score > 0.5)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10);
-    
+
     report.suspiciousIPs = suspicious.map(([ip, score]) => ({
       ip,
       score,
       pattern: this.sanitizePattern(this.patterns.get(ip) || {})
     }));
-    
+
     return report;
   }
 
@@ -995,11 +1052,11 @@ class AdvancedRateLimiter extends EventEmitter {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
-    
+
     if (this.patternInterval) {
       clearInterval(this.patternInterval);
     }
-    
+
     logger.info('Rate limiter shutdown');
   }
 }
