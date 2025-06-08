@@ -1,4 +1,5 @@
 
+/* eslint-disable no-console */
 /**
  * Security Key Generation Script
  * Generates cryptographically secure keys for the Discord AI Moderator

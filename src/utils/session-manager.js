@@ -18,7 +18,10 @@ class SessionManager {
       maxSessions: 5, // Max concurrent sessions per user
       enableEncryption: true,
       enableRotation: true,
-      secureMode: process.env.NODE_ENV === 'production'
+      secureMode: process.env.NODE_ENV === 'production',
+      rotationInterval: 24 * 60 * 60 * 1000, // 24 hours - force rotation
+      maxPreviousIds: 3, // Number of previous session IDs to track
+      fingerprintTimeout: 30 * 24 * 60 * 60 * 1000 // 30 days
     };
     this.encryptionKey = null;
     this.stats = {
@@ -140,7 +143,7 @@ class SessionManager {
   }
 
   /**
-   * Create a new session
+   * Create a new session with enhanced security
    */
   async createSession(userId, serverId, permissions = [], options = {}) {
     try {
@@ -149,7 +152,7 @@ class SessionManager {
       }
 
       // Generate session ID and JWT ID
-      const sessionId = crypto.randomBytes(32).toString('hex');
+      const sessionId = crypto.randomUUID();
       const jti = crypto.randomBytes(16).toString('hex');
       const deviceId = options.deviceId || crypto.randomBytes(16).toString('hex');
 
@@ -158,6 +161,9 @@ class SessionManager {
 
       const now = Date.now();
       const expiry = now + this.config.sessionTimeout;
+
+      // Generate client fingerprint
+      const fingerprint = this.generateFingerprint(options);
 
       // Create JWT payload
       const payload = {
@@ -169,7 +175,8 @@ class SessionManager {
         deviceId,
         iat: Math.floor(now / 1000),
         exp: Math.floor(expiry / 1000),
-        nbf: Math.floor(now / 1000) // Not before
+        nbf: Math.floor(now / 1000), // Not before
+        fingerprint
       };
 
       // Add additional claims
@@ -200,8 +207,11 @@ class SessionManager {
         expiresAt: expiry,
         ipHash: payload.ipHash,
         userAgentHash: payload.userAgent,
+        fingerprint,
         refreshCount: 0,
-        isActive: true
+        isActive: true,
+        previousIds: [], // Track previous session IDs for rotation
+        lastRotation: now
       };
 
       // Encrypt session data if enabled
@@ -242,9 +252,33 @@ class SessionManager {
   }
 
   /**
-   * Verify and decode a JWT token
+   * Generate a client fingerprint for session binding
    */
-  async verifyToken(token, options = {}) {
+  generateFingerprint(options) {
+    try {
+      // Collect client characteristics
+      const characteristics = [
+        options.ipAddress || 'unknown',
+        options.userAgent || 'unknown',
+        options.acceptLanguage || 'unknown',
+        options.deviceId || 'unknown'
+      ];
+
+      // Create a hash of the combined characteristics
+      return crypto.createHash('sha256')
+        .update(characteristics.join('|') + this.encryptionKey.toString('hex'))
+        .digest('hex');
+    } catch (error) {
+      logger.error('Failed to generate client fingerprint:', error);
+      // Return a random fingerprint as fallback
+      return crypto.randomBytes(32).toString('hex');
+    }
+  }
+
+  /**
+   * Validate a session token with enhanced security checks
+   */
+  async validateSession(token, options = {}) {
     try {
       if (!this.initialized) {
         throw new Error('Session manager not initialized');
@@ -275,6 +309,14 @@ class SessionManager {
       // Get session data
       const sessionData = await this.getSession(decoded.sessionId);
       if (!sessionData) {
+        // Check if this is a rotated session
+        if (decoded.previousSessionId) {
+          const previousSession = await this.getSession(decoded.previousSessionId);
+          if (previousSession && previousSession.isActive && previousSession.previousIds.includes(decoded.sessionId)) {
+            // Redirect to the new session
+            throw new Error('Session rotated');
+          }
+        }
         throw new Error('Session not found');
       }
 
@@ -294,6 +336,34 @@ class SessionManager {
       if (sessionData.encrypted && sessionData.data) {
         const decryptedData = this.decryptData(sessionData.data);
         permissions = decryptedData.permissions || [];
+      }
+
+      // Verify client fingerprint if present
+      if (decoded.fingerprint && options.ipAddress && options.userAgent) {
+        const currentFingerprint = this.generateFingerprint({
+          ipAddress: options.ipAddress,
+          userAgent: options.userAgent,
+          acceptLanguage: options.acceptLanguage,
+          deviceId: decoded.deviceId
+        });
+
+        if (decoded.fingerprint !== currentFingerprint) {
+          await AuditLogger.logSecurityEvent({
+            type: 'SESSION_FINGERPRINT_MISMATCH',
+            userId: decoded.userId,
+            sessionId: decoded.sessionId,
+            timestamp: Date.now()
+          });
+
+          logger.warn('Client fingerprint mismatch', {
+            sessionId: decoded.sessionId,
+            userId: decoded.userId
+          });
+
+          if (this.config.secureMode) {
+            throw new Error('Client fingerprint mismatch');
+          }
+        }
       }
 
       // Enhanced security checks
@@ -329,6 +399,27 @@ class SessionManager {
         }
       }
 
+      // Check if session needs rotation
+      const now = Date.now();
+      if (this.config.enableRotation &&
+        (now - sessionData.lastRotation > this.config.rotationInterval)) {
+        // Rotate session
+        const rotatedSession = await this.rotateSession(decoded.sessionId, token, options);
+        if (rotatedSession) {
+          return {
+            ...rotatedSession.decoded,
+            permissions,
+            sessionData: {
+              createdAt: sessionData.createdAt,
+              lastActivity: now,
+              refreshCount: sessionData.refreshCount,
+              rotated: true,
+              newToken: rotatedSession.token
+            }
+          };
+        }
+      }
+
       // Update last activity
       await this.updateSessionActivity(decoded.sessionId);
 
@@ -350,7 +441,7 @@ class SessionManager {
       // Log failed verification attempts
       if (error.name !== 'TokenExpiredError') {
         await AuditLogger.logSecurityEvent({
-          type: 'TOKEN_VERIFICATION_FAILED',
+          type: 'SESSION_VALIDATION_FAILED',
           error: error.message,
           timestamp: Date.now(),
           options: {
@@ -365,9 +456,104 @@ class SessionManager {
   }
 
   /**
-   * Refresh a token if needed
+   * Verify and decode a JWT token (alias for validateSession for backward compatibility)
    */
-  async refreshIfNeeded(token) {
+  async verifyToken(token, options = {}) {
+    return this.validateSession(token, options);
+  }
+
+  /**
+   * Rotate a session for enhanced security
+   */
+  async rotateSession(sessionId, oldToken, options = {}) {
+    try {
+      if (!this.config.enableRotation) return null;
+
+      // Get current session data
+      const sessionData = await this.getSession(sessionId);
+      if (!sessionData || !sessionData.isActive) return null;
+
+      // Decode old token
+      const decoded = jwt.decode(oldToken);
+      if (!decoded) return null;
+
+      // Generate new session ID
+      const newSessionId = crypto.randomUUID();
+
+      // Create new session data based on old one
+      const now = Date.now();
+      const newSessionData = {
+        ...sessionData,
+        previousIds: [
+          sessionId,
+          ...(sessionData.previousIds || [])
+        ].slice(0, this.config.maxPreviousIds),
+        lastRotation: now,
+        lastActivity: now
+      };
+
+      // Update fingerprint if client info available
+      if (options.ipAddress || options.userAgent) {
+        newSessionData.fingerprint = this.generateFingerprint({
+          ipAddress: options.ipAddress,
+          userAgent: options.userAgent,
+          acceptLanguage: options.acceptLanguage,
+          deviceId: decoded.deviceId
+        });
+      }
+
+      // Create new payload
+      const newPayload = {
+        ...decoded,
+        sessionId: newSessionId,
+        previousSessionId: sessionId,
+        iat: Math.floor(now / 1000),
+        exp: Math.floor((now + this.config.sessionTimeout) / 1000),
+        jti: crypto.randomBytes(16).toString('hex'),
+        fingerprint: newSessionData.fingerprint
+      };
+
+      // Create new token
+      const newToken = jwt.sign(newPayload, process.env.JWT_SECRET, {
+        algorithm: 'HS256',
+        issuer: 'discord-ai-moderator',
+        audience: decoded.serverId
+      });
+
+      // Store new session
+      await this.storeSession(newSessionId, newSessionData);
+
+      // Update user session mapping
+      await this.addUserSession(decoded.userId, newSessionId);
+
+      // Blacklist old token
+      await this.blacklistToken(oldToken, 'rotated');
+
+      // Log session rotation
+      await AuditLogger.log({
+        action: 'SESSION_ROTATED',
+        userId: decoded.userId,
+        oldSessionId: sessionId,
+        newSessionId,
+        timestamp: now
+      });
+
+      return {
+        token: newToken,
+        sessionId: newSessionId,
+        decoded: newPayload
+      };
+
+    } catch (error) {
+      logger.error('Failed to rotate session:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Refresh a token if needed with enhanced security
+   */
+  async refreshIfNeeded(token, options = {}) {
     try {
       if (!this.config.enableRotation) return null;
 
@@ -389,7 +575,16 @@ class SessionManager {
         return null;
       }
 
-      // Create new token with extended expiry
+      // Check if full rotation is needed
+      if (now - (sessionData.lastRotation || 0) > this.config.rotationInterval) {
+        // Perform full session rotation
+        const rotatedSession = await this.rotateSession(decoded.sessionId, token, options);
+        if (rotatedSession) {
+          return rotatedSession.token;
+        }
+      }
+
+      // Otherwise just refresh the token
       const newExpiry = now + this.config.sessionTimeout;
       const newPayload = {
         ...decoded,
@@ -397,6 +592,16 @@ class SessionManager {
         exp: Math.floor(newExpiry / 1000),
         jti: crypto.randomBytes(16).toString('hex') // New JWT ID
       };
+
+      // Update fingerprint if client info available
+      if (options.ipAddress || options.userAgent) {
+        newPayload.fingerprint = this.generateFingerprint({
+          ipAddress: options.ipAddress,
+          userAgent: options.userAgent,
+          acceptLanguage: options.acceptLanguage,
+          deviceId: decoded.deviceId
+        });
+      }
 
       const newToken = jwt.sign(newPayload, process.env.JWT_SECRET, {
         algorithm: 'HS256',
@@ -408,6 +613,11 @@ class SessionManager {
       sessionData.expiresAt = newExpiry;
       sessionData.lastActivity = now;
       sessionData.refreshCount = (sessionData.refreshCount || 0) + 1;
+
+      // Update fingerprint in session data
+      if (newPayload.fingerprint) {
+        sessionData.fingerprint = newPayload.fingerprint;
+      }
 
       await this.storeSession(decoded.sessionId, sessionData);
 

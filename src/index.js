@@ -7,6 +7,7 @@ const logger = require('./utils/logger');
 const errorManager = require('./utils/error-manager');
 const crypto = require('crypto');
 const os = require('os');
+const path = require('path');
 
 // Import enhanced security modules
 const SecurityMonitor = require('./utils/security-monitor');
@@ -16,6 +17,7 @@ const SessionManager = require('./utils/session-manager');
 const PrivacyManager = require('./utils/privacy-manager');
 const { FaultTolerantSystem } = require('./utils/fault-tolerance');
 const advancedRateLimiter = require('./utils/advanced_rate_limiter');
+const workerManager = require('./utils/worker-manager');
 
 // Global security state
 const SECURITY_STATE = {
@@ -174,11 +176,60 @@ async function initializePerformance() {
     // Initialize message queue
     await performanceOptimizer.initializeMessageQueue();
 
+    // Initialize worker thread pool
+    await initializeWorkerThreadPool();
+
     logger.info('Performance optimization initialized successfully');
 
   } catch (error) {
     logger.error('Failed to initialize performance optimization:', error);
     // Non-critical error, continue without performance optimization
+  }
+}
+
+// Worker Thread Pool initialization
+async function initializeWorkerThreadPool() {
+  try {
+    logger.info('Initializing worker thread pool...');
+
+    // Configure worker thread pool
+    const workerOptions = {
+      minThreads: process.env.WORKER_MIN_THREADS ? parseInt(process.env.WORKER_MIN_THREADS, 10) : undefined,
+      maxThreads: process.env.WORKER_MAX_THREADS ? parseInt(process.env.WORKER_MAX_THREADS, 10) : undefined,
+      adaptiveScaling: process.env.WORKER_ADAPTIVE_SCALING !== 'false',
+      taskDirectory: path.join(__dirname, 'utils', 'worker-tasks'),
+      warmupEnabled: process.env.WORKER_WARMUP_ENABLED !== 'false'
+    };
+
+    // Initialize worker manager
+    await workerManager.initialize(workerOptions);
+
+    // Register custom worker tasks if needed
+    // workerManager.registerTask('custom-task', path.join(__dirname, 'utils', 'worker-tasks', 'custom-task.js'));
+
+    logger.info('Worker thread pool initialized successfully', {
+      workers: workerManager.getWorkerCount(),
+      adaptiveScaling: workerOptions.adaptiveScaling
+    });
+
+    // Log system info from worker
+    const systemInfo = await workerManager.getSystemInfo();
+    logger.debug('Worker system info', {
+      cpu: systemInfo.cpu,
+      memory: systemInfo.memory.usagePercentage
+    });
+
+    await AuditLogger.logSystemEvent({
+      type: 'WORKER_POOL_INITIALIZED',
+      workers: workerManager.getWorkerCount(),
+      adaptiveScaling: workerOptions.adaptiveScaling,
+      instanceId: SECURITY_STATE.instanceId,
+      timestamp: Date.now()
+    });
+
+  } catch (error) {
+    logger.error('Failed to initialize worker thread pool:', error);
+    // Non-critical error, continue without worker thread pool
   }
 }
 
@@ -694,6 +745,12 @@ async function gracefulShutdown(signal) {
       await SessionManager.shutdown();
     }
 
+    // Shutdown worker thread pool
+    if (workerManager && workerManager.isInitialized()) {
+      logger.info('Shutting down worker thread pool...');
+      await workerManager.shutdown();
+    }
+
     // Disconnect Discord client
     if (client && SECURITY_STATE.components.discord) {
       logger.info('Disconnecting Discord client...');
@@ -825,6 +882,16 @@ process.on('exit', async (code) => {
   logger.info(`Process exiting with code: ${code}`);
 
   try {
+    // Ensure worker pool is shut down
+    if (workerManager && workerManager.isInitialized()) {
+      try {
+        await workerManager.shutdown();
+      } catch (workerError) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to shutdown worker pool during exit:', workerError);
+      }
+    }
+
     await AuditLogger.logSystemEvent({
       type: 'PROCESS_EXIT',
       code,

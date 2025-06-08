@@ -4,98 +4,30 @@ const path = require('path');
 const crypto = require('crypto');
 const logger = require('./utils/logger');
 const _errorManager = require('./utils/error-manager');
+const AdaptiveQueryOptimizer = require('./utils/adaptive-query-optimizer');
+const TieredCache = require('./utils/tiered-cache');
 
 let db = null;
 let dbAsync = null;
+let queryOptimizer = null;
 
-// Simple in-memory cache for frequently accessed data
-class SimpleCache {
-  constructor(ttl = 300000) { // 5 minutes default TTL
-    if (typeof ttl !== 'number' || ttl <= 0) {
-      throw new Error('Cache TTL must be a positive number');
-    }
-    this.cache = new Map();
-    this.ttl = ttl;
-    this.timers = new Map();
-  }
+// Create tiered cache instances
+const configCache = new TieredCache({
+  namespace: 'server-config',
+  l1Capacity: 500,        // L1 cache size (most recently used configs)
+  l2TTL: 300000,          // 5 minutes for L2 cache
+  l1WritePolicy: 'write-through',
+  statsInterval: 600000   // Log stats every 10 minutes
+});
 
-  get(key) {
-    if (!key) return null;
-
-    try {
-      const item = this.cache.get(key);
-      if (item && Date.now() < item.expiry) {
-        return item.value;
-      }
-      this.delete(key);
-    } catch (error) {
-      logger.error('Error in cache.get', { error: error.message, key });
-    }
-    return null;
-  }
-
-  set(key, value, customTtl = null) {
-    if (!key) return;
-
-    try {
-      const ttl = (customTtl !== null && typeof customTtl === 'number' && customTtl > 0)
-        ? customTtl
-        : this.ttl;
-
-      this.cache.set(key, {
-        value,
-        expiry: Date.now() + ttl
-      });
-
-      // Clear existing timer
-      if (this.timers.has(key)) {
-        clearTimeout(this.timers.get(key));
-      }
-
-      // Set new timer for cleanup
-      const timer = setTimeout(() => {
-        this.delete(key);
-      }, ttl);
-      this.timers.set(key, timer);
-    } catch (error) {
-      logger.error('Error in cache.set', { error: error.message, key });
-    }
-  }
-
-  delete(key) {
-    if (!key) return;
-
-    try {
-      this.cache.delete(key);
-      if (this.timers.has(key)) {
-        clearTimeout(this.timers.get(key));
-        this.timers.delete(key);
-      }
-    } catch (error) {
-      logger.error('Error in cache.delete', { error: error.message, key });
-    }
-  }
-
-  clear() {
-    try {
-      for (const timer of this.timers.values()) {
-        clearTimeout(timer);
-      }
-      this.cache.clear();
-      this.timers.clear();
-    } catch (error) {
-      logger.error('Error in cache.clear', { error: error.message });
-    }
-  }
-
-  size() {
-    return this.cache.size;
-  }
-}
-
-// Create cache instances
-const configCache = new SimpleCache(300000); // 5 minutes for server configs
-const userCache = new SimpleCache(60000); // 1 minute for user data
+const userCache = new TieredCache({
+  namespace: 'user-data',
+  l1Capacity: 1000,       // L1 cache size (most recently used users)
+  l2TTL: 60000,           // 1 minute for L2 cache
+  l1WritePolicy: 'write-back',
+  l1WriteBackInterval: 10000, // Write back every 10 seconds
+  statsInterval: 600000   // Log stats every 10 minutes
+});
 
 // Async wrapper for SQLite operations
 class AsyncDatabase {
@@ -305,6 +237,7 @@ function setupDatabase() {
       // This is safer than checking existence first, as it avoids race conditions
       // and doesn't require using existsSync with a dynamic path
       try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename
         fs.mkdirSync(dataDir, { recursive: true });
       } catch (dirError) {
         // Only throw if it's not an "already exists" error
@@ -324,6 +257,17 @@ function setupDatabase() {
 
         // Create async wrapper
         dbAsync = new AsyncDatabase(db);
+
+        // Initialize query optimizer
+        queryOptimizer = new AdaptiveQueryOptimizer({
+          highLoadThreshold: 0.6,
+          criticalLoadThreshold: 0.85,
+          defaultQueryLimit: 1000,
+          highLoadQueryLimit: 500,
+          criticalLoadQueryLimit: 100,
+          slowQueryThreshold: 300, // ms
+          enableQueryCache: true
+        });
 
         // Enable optimizations
         await dbAsync.run("PRAGMA journal_mode = WAL");
@@ -475,7 +419,7 @@ async function getServerConfig(serverId, _options = {}) {
       logger.warn('Server ID contained invalid characters', { original: serverId, sanitized: sanitizedServerId });
     }
 
-    // Check cache first
+    // Check cache first - using direct key without namespace prefix (handled by TieredCache)
     const cacheKey = `config:${sanitizedServerId}`;
     const cached = configCache.get(cacheKey);
     if (cached) {
@@ -816,7 +760,7 @@ async function getUserData(userId, serverId) {
       });
     }
 
-    // Check cache first
+    // Check cache first - using direct key without namespace prefix (handled by TieredCache)
     const cacheKey = `user:${sanitizedUserId}:${sanitizedServerId}`;
     const cached = userCache.get(cacheKey);
     if (cached) {
@@ -914,7 +858,11 @@ async function getViolationLogs(serverId, options = {}) {
 
     const sql = `SELECT * FROM violation_logs ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
 
-    const rows = await dbAsync.all(sql, params);
+    // Use the query optimizer to execute the query
+    const rows = await queryOptimizer.executeQuery(dbAsync, sql, params, {
+      skipOptimization: options.skipOptimization,
+      skipCache: options.skipCache
+    });
 
     // Validate returned data
     return (rows || []).map(row => {
@@ -969,22 +917,32 @@ async function closeDatabase() {
   try {
     logger.info('Closing database connection...');
 
-    // Clear caches first to prevent any further access
+    // Shutdown caches properly to ensure data persistence and cleanup
     if (configCache) {
       try {
-        configCache.clear();
-        logger.debug('Config cache cleared');
+        configCache.shutdown();
+        logger.debug('Config cache shutdown');
       } catch (cacheError) {
-        logger.error('Error clearing config cache', { error: cacheError.message });
+        logger.error('Error shutting down config cache', { error: cacheError.message });
       }
     }
 
     if (userCache) {
       try {
-        userCache.clear();
-        logger.debug('User cache cleared');
+        userCache.shutdown();
+        logger.debug('User cache shutdown');
       } catch (cacheError) {
-        logger.error('Error clearing user cache', { error: cacheError.message });
+        logger.error('Error shutting down user cache', { error: cacheError.message });
+      }
+    }
+
+    // Shutdown query optimizer
+    if (queryOptimizer) {
+      try {
+        queryOptimizer.shutdown();
+        logger.debug('Query optimizer shutdown');
+      } catch (optimizerError) {
+        logger.error('Error shutting down query optimizer', { error: optimizerError.message });
       }
     }
 
@@ -1017,6 +975,7 @@ async function closeDatabase() {
     // Clear references
     db = null;
     dbAsync = null;
+    queryOptimizer = null;
 
     logger.info('Database shutdown complete');
   } catch (error) {
@@ -1028,6 +987,7 @@ async function closeDatabase() {
     // Force clear references even on error
     db = null;
     dbAsync = null;
+    queryOptimizer = null;
   }
 }
 
@@ -1099,5 +1059,10 @@ module.exports = {
   closeDatabase,
   cleanupOldLogs,
   configCache,
-  userCache
+  userCache,
+  getQueryOptimizerStats: () => queryOptimizer ? queryOptimizer.getStats() : null,
+  getCacheStats: () => ({
+    configCache: configCache ? configCache.getStats() : null,
+    userCache: userCache ? userCache.getStats() : null
+  })
 };

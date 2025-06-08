@@ -50,7 +50,7 @@ function setupApi() {
       directives: {
         defaultSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
+        scriptSrc: ["'self'", "'nonce-${req => req.cspNonce}'"],
         imgSrc: ["'self'", "data:", "https:"],
         connectSrc: ["'self'"],
         fontSrc: ["'self'"],
@@ -60,8 +60,10 @@ function setupApi() {
         frameAncestors: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
-        upgradeInsecureRequests: []
+        upgradeInsecureRequests: [],
+        reportUri: '/api/security/csp-report'
       },
+      reportOnly: false
     },
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: "same-origin" },
@@ -77,11 +79,43 @@ function setupApi() {
     frameguard: { action: 'deny' }
   }));
 
-  // Request ID middleware for audit tracking
+  // Request ID and CSP nonce middleware for audit tracking and security
   app.use((req, res, next) => {
+    // Generate request ID for tracking
     req.requestId = crypto.randomUUID();
     res.setHeader('X-Request-ID', req.requestId);
+
+    // Generate CSP nonce for script tags
+    req.cspNonce = crypto.randomBytes(16).toString('base64');
+
     next();
+  });
+
+  // CSP violation reporting endpoint
+  app.post('/api/security/csp-report', async (req, res) => {
+    try {
+      const report = req.body['csp-report'] || req.body;
+
+      await AuditLogger.logSecurityEvent({
+        type: 'CSP_VIOLATION',
+        report,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')?.substring(0, 100),
+        requestId: req.requestId,
+        timestamp: Date.now()
+      });
+
+      logger.warn('CSP violation reported', {
+        directive: report['violated-directive'] || report.directive,
+        blockedUri: report['blocked-uri'] || report.blockedURI,
+        documentUri: report['document-uri'] || report.documentURI
+      });
+
+      res.status(204).end();
+    } catch (error) {
+      logger.error('Error processing CSP report', { error: error.message });
+      res.status(500).json({ error: 'Failed to process CSP report' });
+    }
   });
 
   // Enhanced body parsing with security verification

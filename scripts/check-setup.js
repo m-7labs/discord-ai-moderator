@@ -1,12 +1,11 @@
 
+/* eslint-disable no-console */
 /**
  * Discord AI Moderator Setup Validation Script
  * This script checks if your environment is properly configured
  */
 
 const fs = require('fs');
-// Path module is not used in this script
-const _path = require('path');
 
 console.log('🔍 Discord AI Moderator - Setup Validation');
 console.log('==========================================\n');
@@ -183,10 +182,11 @@ const requiredFiles = [
   'src/index.js',
   'src/bot.js',
   'src/database.js',
-  'src/utils/errorManager.js'
+  'src/utils/error-manager.js'
 ];
 
 requiredDirs.forEach(dir => {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   if (fs.existsSync(dir)) {
     logSuccess(`Directory ${dir} exists`);
   } else {
@@ -195,6 +195,7 @@ requiredDirs.forEach(dir => {
 });
 
 requiredFiles.forEach(file => {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   if (fs.existsSync(file)) {
     logSuccess(`File ${file} exists`);
   } else {

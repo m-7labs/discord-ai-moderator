@@ -5,6 +5,7 @@
 
 // eslint-disable-next-line no-unused-vars
 const _crypto = require('crypto');
+const _crypto2 = require('crypto');
 const EventEmitter = require('events');
 const logger = require('./logger');
 
@@ -106,11 +107,23 @@ class AdvancedRateLimiter extends EventEmitter {
 
       redis: options.redis || null,
 
-      // New: Enhanced pattern detection
+      // Enhanced pattern detection
       patternDetection: {
         enabled: options.patternDetection?.enabled !== false,
         analysisWindow: options.patternDetection?.analysisWindow || 300000, // 5 minutes
         minimumRequests: options.patternDetection?.minimumRequests || 10
+      },
+
+      // IP Reputation System
+      ipReputation: {
+        enabled: options.ipReputation?.enabled !== false,
+        minScore: options.ipReputation?.minScore || 0,
+        maxScore: options.ipReputation?.maxScore || 100,
+        defaultScore: options.ipReputation?.defaultScore || 50,
+        blockThreshold: options.ipReputation?.blockThreshold || 20,
+        decayRate: options.ipReputation?.decayRate || 0.05, // 5% decay per hour
+        decayInterval: options.ipReputation?.decayInterval || 3600000, // 1 hour
+        highReputationThreshold: options.ipReputation?.highReputationThreshold || 80
       }
     });
 
@@ -121,12 +134,19 @@ class AdvancedRateLimiter extends EventEmitter {
     this.patterns = new Map();
     this.userTrustLevels = new Map();
 
+    // IP Reputation tracking
+    this.ipReputationScores = new Map();
+    this.requestCounts = new Map();
+    this.blockList = new Set();
+    this.suspiciousPatterns = new Map();
+
     this.stats = {
       allowed: 0,
       blocked: 0,
       blacklisted: 0,
       ddosAttempts: 0,
-      patternAnomalies: 0
+      patternAnomalies: 0,
+      reputationBlocks: 0
     };
 
     this.redisHealthy = false;
@@ -134,6 +154,7 @@ class AdvancedRateLimiter extends EventEmitter {
     this.initializeRedis();
     this.startCleanup();
     this.startPatternAnalysis();
+    this.startReputationDecay();
   }
 
   /**
@@ -244,16 +265,54 @@ class AdvancedRateLimiter extends EventEmitter {
     return this.config.perIP.max;
   }
 
+  /**
+   * Calculate dynamic window based on IP reputation
+   */
+  calculateDynamicWindow(ip, baseWindow) {
+    if (!this.config.ipReputation.enabled) {
+      return baseWindow;
+    }
+
+    const reputation = this.getIPReputation(ip);
+    const { maxScore, highReputationThreshold } = this.config.ipReputation;
+
+    // High reputation IPs get longer windows (more lenient)
+    if (reputation >= highReputationThreshold) {
+      const factor = 1 + ((reputation - highReputationThreshold) / (maxScore - highReputationThreshold));
+      return Math.floor(baseWindow * factor);
+    }
+
+    // Low reputation IPs get shorter windows (more strict)
+    if (reputation < this.config.ipReputation.defaultScore) {
+      const factor = Math.max(0.1, reputation / this.config.ipReputation.defaultScore);
+      return Math.floor(baseWindow * factor);
+    }
+
+    return baseWindow;
+  }
+
   async checkLimit(req) {
     try {
       const identifiers = this.extractIdentifiers(req);
+      const ip = identifiers.ip;
 
-      if (this.whitelist.has(identifiers.ip)) {
+      // Check if IP is in block list from reputation system
+      if (this.blockList.has(ip)) {
+        this.stats.blocked++;
+        this.stats.reputationBlocks++;
+        return {
+          allowed: false,
+          reason: 'IP blocked due to low reputation score',
+          retryAfter: this.config.perIP.blockDuration
+        };
+      }
+
+      if (this.whitelist.has(ip)) {
         this.stats.allowed++;
         return { allowed: true, whitelisted: true };
       }
 
-      if (await this.isBlacklisted(identifiers.ip)) {
+      if (await this.isBlacklisted(ip)) {
         this.stats.blocked++;
         this.stats.blacklisted++;
         return {
@@ -261,6 +320,15 @@ class AdvancedRateLimiter extends EventEmitter {
           reason: 'IP blacklisted',
           retryAfter: this.config.perIP.blockDuration
         };
+      }
+
+      // Track request count for this IP
+      this.incrementRequestCount(ip);
+
+      // Check for suspicious patterns
+      const isSuspicious = this.checkSuspiciousPatterns(ip, req);
+      if (isSuspicious) {
+        this.decreaseReputation(ip, 5, 'Suspicious request pattern detected');
       }
 
       const checks = await this.performChecks(identifiers, req);
@@ -273,6 +341,9 @@ class AdvancedRateLimiter extends EventEmitter {
         this.stats.allowed++;
       } else {
         this.stats.blocked++;
+
+        // Decrease reputation for rate limit violations
+        this.decreaseReputation(ip, 2, 'Rate limit exceeded');
 
         if (this.config.ddos.enabled) {
           await this.checkForDDoS(identifiers, result);
@@ -369,21 +440,30 @@ class AdvancedRateLimiter extends EventEmitter {
     const key = `ip:${ip}`;
     const config = this.config.perIP;
 
+    // Apply dynamic window based on reputation
+    const dynamicWindow = this.calculateDynamicWindow(ip, config.window);
+
     const suspicionScore = await this.getSuspicionScore(ip);
     const multiplier = this.getAdaptiveMultiplier(suspicionScore);
 
     const adjustedMax = Math.floor(config.max * multiplier);
-    const bucket = this.getOrCreateBucket(key, adjustedMax, adjustedMax / (config.window / 1000));
+    const bucket = this.getOrCreateBucket(key, adjustedMax, adjustedMax / (dynamicWindow / 1000));
 
     const allowed = bucket.consume();
 
     await this.trackIPPattern(ip, allowed);
 
+    // If not allowed, decrease reputation
+    if (!allowed) {
+      this.decreaseReputation(ip, 1, 'IP rate limit exceeded');
+    }
+
     return {
       allowed,
       remaining: bucket.getTokens(),
       retryAfter: bucket.getRetryAfter(),
-      suspicionScore
+      suspicionScore,
+      reputation: this.getIPReputation(ip)
     };
   }
 
@@ -536,6 +616,226 @@ class AdvancedRateLimiter extends EventEmitter {
   }
 
   /**
+   * Get IP reputation score (0-100)
+   */
+  getIPReputation(ip) {
+    if (!this.config.ipReputation.enabled) {
+      return this.config.ipReputation.defaultScore;
+    }
+
+    if (!this.ipReputationScores.has(ip)) {
+      this.ipReputationScores.set(ip, this.config.ipReputation.defaultScore);
+    }
+
+    return this.ipReputationScores.get(ip);
+  }
+
+  /**
+   * Decrease IP reputation score
+   */
+  decreaseReputation(ip, amount, reason) {
+    if (!this.config.ipReputation.enabled) return;
+
+    const currentScore = this.getIPReputation(ip);
+    const newScore = Math.max(this.config.ipReputation.minScore, currentScore - amount);
+
+    this.ipReputationScores.set(ip, newScore);
+
+    // Log significant reputation drops
+    if (currentScore - newScore >= 5) {
+      logger.warn(`IP reputation decreased significantly`, {
+        ip,
+        oldScore: currentScore,
+        newScore,
+        reason
+      });
+    }
+
+    // Check if IP should be blocked
+    if (newScore <= this.config.ipReputation.blockThreshold && !this.blockList.has(ip)) {
+      this.blockList.add(ip);
+      logger.warn(`IP blocked due to low reputation score`, {
+        ip,
+        score: newScore,
+        threshold: this.config.ipReputation.blockThreshold,
+        reason
+      });
+    }
+
+    // Store in Redis if available
+    if (this.redis && this.redisHealthy) {
+      try {
+        this.redis.setex(`ip_reputation:${ip}`, 86400, newScore.toString());
+      } catch (error) {
+        logger.error('Failed to store IP reputation in Redis:', error);
+      }
+    }
+  }
+
+  /**
+   * Increase IP reputation score
+   */
+  increaseReputation(ip, amount) {
+    if (!this.config.ipReputation.enabled) return;
+
+    const currentScore = this.getIPReputation(ip);
+    const newScore = Math.min(this.config.ipReputation.maxScore, currentScore + amount);
+
+    this.ipReputationScores.set(ip, newScore);
+
+    // Remove from block list if reputation is now above threshold
+    if (newScore > this.config.ipReputation.blockThreshold && this.blockList.has(ip)) {
+      this.blockList.delete(ip);
+      logger.info(`IP unblocked due to improved reputation score`, {
+        ip,
+        score: newScore,
+        threshold: this.config.ipReputation.blockThreshold
+      });
+    }
+
+    // Store in Redis if available
+    if (this.redis && this.redisHealthy) {
+      try {
+        this.redis.setex(`ip_reputation:${ip}`, 86400, newScore.toString());
+      } catch (error) {
+        logger.error('Failed to store IP reputation in Redis:', error);
+      }
+    }
+  }
+
+  /**
+   * Start reputation decay process
+   */
+  startReputationDecay() {
+    if (!this.config.ipReputation.enabled) return;
+
+    this.reputationDecayInterval = setInterval(() => {
+      this.decayReputationScores();
+    }, this.config.ipReputation.decayInterval);
+
+    logger.info('IP reputation decay process started', {
+      interval: this.config.ipReputation.decayInterval,
+      decayRate: this.config.ipReputation.decayRate
+    });
+  }
+
+  /**
+   * Decay all reputation scores toward default
+   */
+  decayReputationScores() {
+    const { defaultScore, decayRate } = this.config.ipReputation;
+    let updated = 0;
+
+    for (const [ip, score] of this.ipReputationScores.entries()) {
+      if (score === defaultScore) continue;
+
+      // Decay toward default score
+      let newScore;
+      if (score < defaultScore) {
+        newScore = Math.min(defaultScore, score + (defaultScore * decayRate));
+      } else {
+        newScore = Math.max(defaultScore, score - ((score - defaultScore) * decayRate));
+      }
+
+      if (newScore !== score) {
+        this.ipReputationScores.set(ip, newScore);
+        updated++;
+
+        // Remove from block list if reputation is now above threshold
+        if (newScore > this.config.ipReputation.blockThreshold && this.blockList.has(ip)) {
+          this.blockList.delete(ip);
+        }
+      }
+    }
+
+    if (updated > 0) {
+      logger.debug(`Decayed ${updated} IP reputation scores`);
+    }
+  }
+
+  /**
+   * Track request count for IP
+   */
+  incrementRequestCount(ip) {
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+
+    if (!this.requestCounts.has(ip)) {
+      this.requestCounts.set(ip, new Map());
+    }
+
+    const counts = this.requestCounts.get(ip);
+    counts.set(minute, (counts.get(minute) || 0) + 1);
+
+    // Clean up old counts (keep last 10 minutes)
+    for (const m of counts.keys()) {
+      if (m < minute - 10) {
+        counts.delete(m);
+      }
+    }
+  }
+
+  /**
+   * Check for suspicious patterns in requests
+   */
+  checkSuspiciousPatterns(ip, req) {
+    if (!this.config.ipReputation.enabled) return false;
+
+    const counts = this.requestCounts.get(ip);
+    if (!counts || counts.size < 2) return false;
+
+    // Get current minute count
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+    const currentCount = counts.get(minute) || 0;
+
+    // Check for sudden spikes (3x increase from previous minute)
+    const prevCount = counts.get(minute - 1) || 0;
+    if (prevCount > 5 && currentCount > prevCount * 3) {
+      this.trackSuspiciousPattern(ip, 'SUDDEN_SPIKE', req);
+      return true;
+    }
+
+    // Check for high frequency requests
+    if (currentCount > 100) {
+      this.trackSuspiciousPattern(ip, 'HIGH_FREQUENCY', req);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Track suspicious pattern
+   */
+  trackSuspiciousPattern(ip, type, req) {
+    if (!this.suspiciousPatterns.has(ip)) {
+      this.suspiciousPatterns.set(ip, []);
+    }
+
+    const patterns = this.suspiciousPatterns.get(ip);
+    patterns.push({
+      type,
+      timestamp: Date.now(),
+      path: req.path,
+      method: req.method,
+      userAgent: req.get('User-Agent')
+    });
+
+    // Keep only last 20 patterns
+    if (patterns.length > 20) {
+      patterns.shift();
+    }
+
+    logger.warn(`Suspicious request pattern detected`, {
+      ip,
+      type,
+      path: req.path,
+      method: req.method
+    });
+  }
+
+  /**
    * Enhanced pattern tracking
    */
   async trackAdvancedPattern(identifiers, result) {
@@ -591,6 +891,11 @@ class AdvancedRateLimiter extends EventEmitter {
       // Low variance indicates uniform timing (bot-like)
       if (variance < 1000 && avgInterval < 10000) { // Less than 1 second variance, less than 10 second intervals
         pattern.uniformIntervals++;
+
+        // Decrease reputation for bot-like behavior
+        if (pattern.uniformIntervals % 5 === 0) {
+          this.decreaseReputation(ip, 3, 'Bot-like request patterns detected');
+        }
       }
     }
 
@@ -688,6 +993,9 @@ class AdvancedRateLimiter extends EventEmitter {
         const currentScore = await this.getSuspicionScore(ip);
         const newScore = Math.min(1.0, currentScore + anomalies.length * 0.1);
         this.suspicionScores.set(ip, newScore);
+
+        // Decrease reputation based on anomalies
+        this.decreaseReputation(ip, anomalies.length, `Pattern anomalies detected: ${anomalies.join(', ')}`);
       }
     }
   }
@@ -756,6 +1064,9 @@ class AdvancedRateLimiter extends EventEmitter {
       if (threatLevel > this.config.ddos.suspicionThreshold) {
         await this.handleDDoSAttempt(ip, threatLevel);
         this.stats.ddosAttempts++;
+
+        // Severely decrease reputation for DDoS attempts
+        this.decreaseReputation(ip, 50, 'DDoS attempt detected');
       }
     }
   }
@@ -854,6 +1165,13 @@ class AdvancedRateLimiter extends EventEmitter {
 
   whitelistIP(ip) {
     this.whitelist.add(ip);
+
+    // Reset reputation to default and remove from block list
+    if (this.config.ipReputation.enabled) {
+      this.ipReputationScores.set(ip, this.config.ipReputation.defaultScore);
+      this.blockList.delete(ip);
+    }
+
     logger.info('IP whitelisted', { ip });
   }
 
@@ -864,6 +1182,13 @@ class AdvancedRateLimiter extends EventEmitter {
 
   async removeFromBlacklist(ip) {
     this.blacklist.delete(ip);
+
+    // Also remove from reputation block list
+    if (this.config.ipReputation.enabled) {
+      this.blockList.delete(ip);
+      // Reset reputation to minimum acceptable level
+      this.ipReputationScores.set(ip, this.config.ipReputation.blockThreshold + 5);
+    }
 
     if (this.redis && this.redisHealthy) {
       try {
@@ -897,6 +1222,33 @@ class AdvancedRateLimiter extends EventEmitter {
       if (entry.expiry && entry.expiry < now) {
         this.blacklist.delete(ip);
         cleaned++;
+      }
+    }
+
+    // Clean up reputation block list
+    if (this.config.ipReputation.enabled) {
+      for (const ip of this.blockList) {
+        const score = this.ipReputationScores.get(ip);
+        if (score > this.config.ipReputation.blockThreshold) {
+          this.blockList.delete(ip);
+          cleaned++;
+        }
+      }
+
+      // Clean up old reputation scores
+      for (const [ip, _score] of this.ipReputationScores.entries()) {
+        if (!this.patterns.has(ip) || this.patterns.get(ip).lastSeen < now - 86400000) {
+          this.ipReputationScores.delete(ip);
+          cleaned++;
+        }
+      }
+
+      // Clean up request counts
+      for (const [ip, counts] of this.requestCounts.entries()) {
+        if (counts.size === 0 || !this.patterns.has(ip)) {
+          this.requestCounts.delete(ip);
+          cleaned++;
+        }
       }
     }
 
@@ -949,7 +1301,9 @@ class AdvancedRateLimiter extends EventEmitter {
         blacklist: this.blacklist.size,
         whitelist: this.whitelist.size,
         suspicionScores: this.suspicionScores.size,
-        userTrustLevels: this.userTrustLevels.size
+        userTrustLevels: this.userTrustLevels.size,
+        ipReputationScores: this.ipReputationScores.size,
+        blockList: this.blockList.size
       }
     });
   }
@@ -960,7 +1314,7 @@ class AdvancedRateLimiter extends EventEmitter {
   enforceMaxMapSizes() {
     const maxBuckets = 10000;
     const maxPatterns = 5000;
-    const _maxScores = 5000;
+    const maxScores = 5000;
 
     // Remove oldest buckets if over limit
     if (this.buckets.size > maxBuckets) {
@@ -982,6 +1336,17 @@ class AdvancedRateLimiter extends EventEmitter {
         this.suspicionScores.delete(key);
       }
     }
+
+    // Remove oldest reputation scores if over limit
+    if (this.ipReputationScores.size > maxScores) {
+      const ips = Array.from(this.ipReputationScores.keys());
+      const toRemove = ips.slice(0, this.ipReputationScores.size - maxScores);
+      for (const ip of toRemove) {
+        if (!this.blockList.has(ip)) {
+          this.ipReputationScores.delete(ip);
+        }
+      }
+    }
   }
 
   getStats() {
@@ -992,6 +1357,8 @@ class AdvancedRateLimiter extends EventEmitter {
       patterns: this.patterns.size,
       buckets: this.buckets.size,
       trustLevels: this.userTrustLevels.size,
+      reputationTracked: this.ipReputationScores.size,
+      reputationBlocked: this.blockList.size,
       redisHealthy: this.redisHealthy
     };
   }
@@ -1003,12 +1370,21 @@ class AdvancedRateLimiter extends EventEmitter {
     this.suspicionScores.clear();
     this.userTrustLevels.clear();
 
+    // Reset reputation tracking
+    if (this.config.ipReputation.enabled) {
+      this.ipReputationScores.clear();
+      this.requestCounts.clear();
+      this.blockList.clear();
+      this.suspiciousPatterns.clear();
+    }
+
     this.stats = {
       allowed: 0,
       blocked: 0,
       blacklisted: 0,
       ddosAttempts: 0,
-      patternAnomalies: 0
+      patternAnomalies: 0,
+      reputationBlocks: 0
     };
 
     logger.info('Rate limiter reset');
@@ -1024,7 +1400,11 @@ class AdvancedRateLimiter extends EventEmitter {
         ...entry
       })),
       suspiciousIPs: [],
-      patternAnomalies: []
+      patternAnomalies: [],
+      reputationBlocked: Array.from(this.blockList).map(ip => ({
+        ip,
+        score: this.ipReputationScores.get(ip) || 0
+      }))
     };
 
     // Top offenders
@@ -1035,7 +1415,8 @@ class AdvancedRateLimiter extends EventEmitter {
     report.topOffenders = offenders.map(([ip, pattern]) => ({
       ip,
       ...this.sanitizePattern(pattern),
-      suspicionScore: this.suspicionScores.get(ip) || 0
+      suspicionScore: this.suspicionScores.get(ip) || 0,
+      reputationScore: this.ipReputationScores.get(ip) || this.config.ipReputation.defaultScore
     }));
 
     // Suspicious IPs
@@ -1047,7 +1428,8 @@ class AdvancedRateLimiter extends EventEmitter {
     report.suspiciousIPs = suspicious.map(([ip, score]) => ({
       ip,
       score,
-      pattern: this.sanitizePattern(this.patterns.get(ip) || {})
+      pattern: this.sanitizePattern(this.patterns.get(ip) || {}),
+      reputationScore: this.ipReputationScores.get(ip) || this.config.ipReputation.defaultScore
     }));
 
     return report;
@@ -1060,6 +1442,10 @@ class AdvancedRateLimiter extends EventEmitter {
 
     if (this.patternInterval) {
       clearInterval(this.patternInterval);
+    }
+
+    if (this.reputationDecayInterval) {
+      clearInterval(this.reputationDecayInterval);
     }
 
     logger.info('Rate limiter shutdown');

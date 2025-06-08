@@ -16,7 +16,7 @@ class AuditLogger {
         timestamp: new Date().toISOString(),
         ...event
       };
-      
+
       logger.info('Audit event', logEntry);
       return logEntry;
     } catch (error) {
@@ -36,6 +36,7 @@ class AuditLogger {
     // Simple initialization - just ensure log directory exists
     try {
       const logDir = path.dirname(this.logPath);
+      // eslint-disable-next-line security/detect-non-literal-fs-filename
       await fs.mkdir(logDir, { recursive: true });
       logger.info('AuditLogger initialized');
       return true;
