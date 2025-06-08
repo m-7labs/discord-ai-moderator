@@ -1,9 +1,9 @@
-const SecurityValidator = require("../utils/security-validator");
+const _SecurityValidator = require("../utils/security-validator");
 /**
  * Setup command handler - Fixed version without database dependencies
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeSetupCommand(interaction) {
+const executeSetupCommand = async (interaction) => {
   try {
     // Check if user has admin permissions
     if (!interaction.member.permissions.has('Administrator')) {
@@ -12,16 +12,16 @@ async function executeSetupCommand(interaction) {
         ephemeral: true
       });
     }
-    
+
     // Begin setup process
     await interaction.reply({
       content: "Welcome to the AI Moderator setup wizard! Let's get your server protected in less than 2 minutes.",
       ephemeral: true
     });
-    
-    const serverId = interaction.guild.id;
+
+    const _serverId = interaction.guild.id;
     const serverName = interaction.guild.name;
-    
+
     // Simulate setup completion without database
     const setupMessage = `✅ **AI Moderator Setup Complete!**
 
@@ -42,16 +42,17 @@ async function executeSetupCommand(interaction) {
 **Note:** Advanced configuration temporarily uses simplified setup due to database connectivity. Your server is protected with default AI moderation rules.
 
 🎉 **Your server is now protected by AI Moderator!**`;
-    
+
     // Send setup completion message
     await interaction.followUp({
       content: setupMessage,
       ephemeral: true
     });
-    
+
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing setup command:', error);
-    
+
     // Handle error response
     if (!interaction.replied) {
       await interaction.reply({
@@ -65,13 +66,13 @@ async function executeSetupCommand(interaction) {
       });
     }
   }
-}
+};
 
 /**
  * Configuration command handler - Fixed version
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeConfigCommand(interaction) {
+const executeConfigCommand = async (interaction) => {
   try {
     // Check if user has admin permissions
     if (!interaction.member.permissions.has('Administrator')) {
@@ -80,7 +81,7 @@ async function executeConfigCommand(interaction) {
         ephemeral: true
       });
     }
-    
+
     const configMessage = `## AI Moderator Configuration
 
 **Current Configuration:**
@@ -101,36 +102,37 @@ async function executeConfigCommand(interaction) {
 • Alert and notification settings
 
 **Note:** Full web dashboard temporarily unavailable. Use bot commands for configuration.`;
-    
+
     await interaction.reply({
       content: configMessage,
       ephemeral: true
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing config command:', error);
-    
+
     await interaction.reply({
       content: 'Configuration interface is temporarily simplified. Bot is working with default settings.',
       ephemeral: true
     });
   }
-}
+};
 
 /**
  * Status command handler - Fixed version without database dependencies
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeStatusCommand(interaction) {
+const executeStatusCommand = async (interaction) => {
   try {
-    const serverId = interaction.guild.id;
+    const _serverId = interaction.guild.id;
     const serverName = interaction.guild.name;
     const memberCount = interaction.guild.memberCount;
-    
+
     // Get basic bot status without database calls
     const botUptime = process.uptime();
     const uptimeHours = Math.floor(botUptime / 3600);
     const uptimeMinutes = Math.floor((botUptime % 3600) / 60);
-    
+
     // Format the status message without database dependency
     const statusMessage = `## AI Moderator Status
 
@@ -148,26 +150,27 @@ async function executeStatusCommand(interaction) {
 **Note:** Database connectivity temporarily limited. Full statistics available via dashboard.
 
 Use \`/modagent_help\` to see all available commands.`;
-    
+
     await interaction.reply({
       content: statusMessage,
       ephemeral: false
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing status command:', error);
-    
+
     await interaction.reply({
       content: 'Bot is running but status details unavailable. Try again later.',
       ephemeral: true
     });
   }
-}
+};
 
 /**
  * Help command handler
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeHelpCommand(interaction) {
+const executeHelpCommand = async (interaction) => {
   try {
     // Check for degraded mode to display appropriate help
     let isInDegradedMode = false;
@@ -224,26 +227,27 @@ Our team is working to restore full functionality as soon as possible.
 • Enterprise-grade error handling
 
 For more information, visit: https://github.com/yourusername/discord-ai-moderator`;
-    
+
     await interaction.reply({
       content: helpMessage,
       ephemeral: true
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing help command:', error);
-    
+
     await interaction.reply({
       content: 'An error occurred. Please try again later.',
       ephemeral: true
     });
   }
-}
+};
 
 /**
  * Review command handler
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeReviewCommand(interaction) {
+const executeReviewCommand = async (interaction) => {
   try {
     // Check if user has appropriate permissions
     if (!interaction.member.permissions.has('ModerateMembers')) {
@@ -252,13 +256,13 @@ async function executeReviewCommand(interaction) {
         ephemeral: true
       });
     }
-    
+
     // Get message ID from options
     const messageId = interaction.options.getString('message_id');
-    
+
     // Defer reply
     await interaction.deferReply({ ephemeral: true });
-    
+
     // Try to fetch the message
     let message;
     try {
@@ -267,7 +271,7 @@ async function executeReviewCommand(interaction) {
     } catch (fetchError) {
       // If not found, try to find in all channels
       let found = false;
-      
+
       for (const [, channel] of interaction.guild.channels.cache) {
         if (channel.isTextBased() && channel.permissionsFor(interaction.guild.members.me).has('ViewChannel')) {
           try {
@@ -279,7 +283,7 @@ async function executeReviewCommand(interaction) {
           }
         }
       }
-      
+
       if (!found) {
         return interaction.followUp({
           content: `Could not find message with ID ${messageId}. Make sure the ID is correct and the message is still available.`,
@@ -287,7 +291,7 @@ async function executeReviewCommand(interaction) {
         });
       }
     }
-    
+
     // Simplified review without database dependency
     const reviewMessage = `## Message Review Results
 
@@ -313,14 +317,15 @@ async function executeReviewCommand(interaction) {
 • Delete message manually if violation detected
 • Warn user through Discord's built-in tools
 • Use \`/modagent_override ${messageId} <action>\` for logging`;
-    
+
     await interaction.followUp({
       content: reviewMessage,
       ephemeral: true
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing review command:', error);
-    
+
     if (interaction.deferred) {
       await interaction.followUp({
         content: 'An error occurred while reviewing the message. Please try again later.',
@@ -333,13 +338,13 @@ async function executeReviewCommand(interaction) {
       });
     }
   }
-}
+};
 
 /**
  * Override command handler
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeOverrideCommand(interaction) {
+const executeOverrideCommand = async (interaction) => {
   try {
     // Check if user has appropriate permissions
     if (!interaction.member.permissions.has('ModerateMembers')) {
@@ -348,24 +353,24 @@ async function executeOverrideCommand(interaction) {
         ephemeral: true
       });
     }
-    
+
     // Get parameters
     const caseId = interaction.options.getString('case_id');
     const action = interaction.options.getString('action');
-    
+
     // Defer reply
     await interaction.deferReply({ ephemeral: true });
-    
+
     // Try to find the message directly
     let targetMessage;
-    
+
     try {
       // First try in the current channel
       targetMessage = await interaction.channel.messages.fetch(caseId);
     } catch (fetchError) {
       // Try to search for message in all channels
       let found = false;
-      
+
       for (const [, channel] of interaction.guild.channels.cache) {
         if (channel.isTextBased() && channel.permissionsFor(interaction.guild.members.me).has('ViewChannel')) {
           try {
@@ -377,7 +382,7 @@ async function executeOverrideCommand(interaction) {
           }
         }
       }
-      
+
       if (!found) {
         return interaction.followUp({
           content: `Could not find message with ID ${caseId}. Make sure the ID is correct and the message is still available.`,
@@ -385,7 +390,7 @@ async function executeOverrideCommand(interaction) {
         });
       }
     }
-    
+
     // Simplified action - just acknowledge without database logging
     const overrideMessage = `## Moderation Override Applied
 
@@ -403,15 +408,16 @@ async function executeOverrideCommand(interaction) {
 • Apply manual Discord moderation if needed
 • Monitor user for additional violations
 • Document action in your server's moderation log`;
-    
+
     await interaction.followUp({
       content: overrideMessage,
       ephemeral: true
     });
-    
+
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing override command:', error);
-    
+
     if (interaction.deferred) {
       await interaction.followUp({
         content: 'An error occurred. Please try again later.',
@@ -424,13 +430,13 @@ async function executeOverrideCommand(interaction) {
       });
     }
   }
-}
+};
 
 /**
  * Exempt command handler
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeExemptCommand(interaction) {
+const executeExemptCommand = async (interaction) => {
   try {
     // Check if user has appropriate permissions
     if (!interaction.member.permissions.has('ModerateMembers')) {
@@ -439,11 +445,11 @@ async function executeExemptCommand(interaction) {
         ephemeral: true
       });
     }
-    
+
     // Get parameters
     const targetUser = interaction.options.getUser('user');
     const duration = interaction.options.getInteger('duration') || 0;
-    
+
     // Format duration message
     let durationText;
     if (duration === 0) {
@@ -455,7 +461,7 @@ async function executeExemptCommand(interaction) {
       const minutes = duration % 60;
       durationText = `for ${hours} hour${hours > 1 ? 's' : ''}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? 's' : ''}` : ''}`;
     }
-    
+
     const exemptMessage = `## User Exemption Applied
 
 **User:** <@${targetUser.id}>
@@ -469,33 +475,34 @@ async function executeExemptCommand(interaction) {
 • Exempted users bypass AI moderation
 • Manual moderation may still be needed
 • Consider removing exemption when appropriate`;
-    
+
     await interaction.reply({
       content: exemptMessage,
       ephemeral: false
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing exempt command:', error);
-    
+
     await interaction.reply({
       content: 'An error occurred. Please try again later.',
       ephemeral: true
     });
   }
-}
+};
 
 /**
  * Stats command handler
  * @param {Object} interaction - Discord.js interaction object
  */
-async function executeStatsCommand(interaction) {
+const executeStatsCommand = async (interaction) => {
   try {
     // Get timeframe parameter
     const timeframe = interaction.options.getString('timeframe') || 'week';
-    
+
     // Defer reply
     await interaction.deferReply({ ephemeral: false });
-    
+
     // Simple stats without database
     const statsMessage = `# Moderation Statistics
 
@@ -525,14 +532,15 @@ async function executeStatsCommand(interaction) {
 **Note:** Detailed usage statistics temporarily unavailable due to database connectivity. System is fully operational for moderation.
 
 **Local Dashboard:** Visit http://localhost:3000 for detailed analytics (if enabled)`;
-    
+
     await interaction.followUp({
       content: statsMessage,
       ephemeral: false
     });
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error executing stats command:', error);
-    
+
     if (interaction.deferred) {
       await interaction.followUp({
         content: 'An error occurred while retrieving statistics. Please try again later.',
@@ -545,7 +553,7 @@ async function executeStatsCommand(interaction) {
       });
     }
   }
-}
+};
 
 module.exports = {
   executeSetupCommand,

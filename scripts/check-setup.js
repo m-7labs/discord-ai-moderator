@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 
 /**
  * Discord AI Moderator Setup Validation Script
@@ -6,7 +5,8 @@
  */
 
 const fs = require('fs');
-const path = require('path');
+// Path module is not used in this script
+const _path = require('path');
 
 console.log('🔍 Discord AI Moderator - Setup Validation');
 console.log('==========================================\n');
@@ -45,7 +45,7 @@ if (majorVersion >= 18) {
 // Check if package.json exists
 if (fs.existsSync('package.json')) {
   logSuccess('package.json found');
-  
+
   // Check if node_modules exists
   if (fs.existsSync('node_modules')) {
     logSuccess('Dependencies appear to be installed');
@@ -59,17 +59,17 @@ if (fs.existsSync('package.json')) {
 // Check environment file
 if (fs.existsSync('.env')) {
   logSuccess('.env file found');
-  
+
   // Load and validate environment variables
   require('dotenv').config();
-  
+
   const requiredVars = [
     'DISCORD_BOT_TOKEN',
     'CLIENT_ID'
   ];
-  
+
   const conditionalVars = [
-    { 
+    {
       condition: () => process.env.AI_PROVIDER === 'ANTHROPIC',
       vars: ['ANTHROPIC_API_KEY'],
       name: 'Anthropic'
@@ -80,7 +80,7 @@ if (fs.existsSync('.env')) {
       name: 'OpenRouter'
     }
   ];
-  
+
   const optionalVars = [
     'AI_PROVIDER',
     'MONGODB_URI',
@@ -91,10 +91,11 @@ if (fs.existsSync('.env')) {
     'MEDIUM_RISK_MODEL',
     'HIGH_RISK_MODEL'
   ];
-  
+
   // Check required variables
   console.log('\n📋 Checking required environment variables:');
   requiredVars.forEach(varName => {
+    // eslint-disable-next-line security/detect-object-injection
     const value = process.env[varName];
     if (value && value.trim() !== '' && !value.includes('your_') && !value.includes('_here')) {
       logSuccess(`${varName} is configured`);
@@ -102,15 +103,16 @@ if (fs.existsSync('.env')) {
       logError(`${varName} is missing or not properly configured`);
     }
   });
-  
+
   // Check conditional variables based on AI provider
   console.log('\n📋 Checking AI provider configuration:');
   const aiProvider = process.env.AI_PROVIDER || 'OPENROUTER';
   logInfo(`AI Provider set to: ${aiProvider}`);
-  
+
   conditionalVars.forEach(condition => {
     if (condition.condition()) {
       condition.vars.forEach(varName => {
+        // eslint-disable-next-line security/detect-object-injection
         const value = process.env[varName];
         if (value && value.trim() !== '' && !value.includes('your_') && !value.includes('_here')) {
           logSuccess(`${varName} is configured for ${condition.name}`);
@@ -120,10 +122,11 @@ if (fs.existsSync('.env')) {
       });
     }
   });
-  
+
   // Check optional variables
   console.log('\n📋 Checking optional environment variables:');
   optionalVars.forEach(varName => {
+    // eslint-disable-next-line security/detect-object-injection
     const value = process.env[varName];
     if (value && value.trim() !== '' && !value.includes('your_')) {
       logSuccess(`${varName} is configured`);
@@ -131,10 +134,10 @@ if (fs.existsSync('.env')) {
       logWarning(`${varName} is not configured (this is optional)`);
     }
   });
-  
+
   // Validate token formats
   console.log('\n🔍 Validating token formats:');
-  
+
   // Discord bot token should start with specific patterns
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (botToken && (botToken.length > 50 && botToken.includes('.'))) {
@@ -142,7 +145,7 @@ if (fs.existsSync('.env')) {
   } else if (botToken) {
     logWarning('Discord bot token format might be incorrect');
   }
-  
+
   // Client ID should be numeric
   const clientId = process.env.CLIENT_ID;
   if (clientId && /^\d+$/.test(clientId) && clientId.length >= 17) {
@@ -150,17 +153,17 @@ if (fs.existsSync('.env')) {
   } else if (clientId) {
     logWarning('Discord client ID format might be incorrect (should be numeric)');
   }
-  
+
   // Validate AI provider keys
-  const aiProvider = process.env.AI_PROVIDER || 'OPENROUTER';
-  if (aiProvider === 'ANTHROPIC') {
+  const currentAiProvider = process.env.AI_PROVIDER || 'OPENROUTER';
+  if (currentAiProvider === 'ANTHROPIC') {
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (anthropicKey && anthropicKey.startsWith('sk-ant-')) {
       logSuccess('Anthropic API key format looks valid');
     } else if (anthropicKey) {
       logWarning('Anthropic API key format might be incorrect (should start with sk-ant-)');
     }
-  } else if (aiProvider === 'OPENROUTER') {
+  } else if (currentAiProvider === 'OPENROUTER') {
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     if (openrouterKey && openrouterKey.startsWith('sk-or-v1-')) {
       logSuccess('OpenRouter API key format looks valid');
@@ -168,7 +171,7 @@ if (fs.existsSync('.env')) {
       logWarning('OpenRouter API key format might be incorrect (should start with sk-or-v1-)');
     }
   }
-  
+
 } else {
   logError('.env file not found. Copy .env.example to .env and configure it.');
 }

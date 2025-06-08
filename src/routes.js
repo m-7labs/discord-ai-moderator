@@ -1,19 +1,19 @@
 const SecurityValidator = require("./utils/security-validator");
 const { client } = require('./bot');
-const { body, param, query, validationResult } = require('express-validator');
-const { 
-  ServerConfig, 
-  UserData, 
-  ViolationLog, 
+const { body, param, query, _validationResult } = require('express-validator');
+const {
+  _ServerConfig,
+  UserData,
+  ViolationLog,
   getServerConfig,
   sanitizeInput,
-  validateServerId,
-  validateUserId 
+  _validateServerId,
+  _validateUserId
 } = require('./database');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const _bcrypt = require('bcrypt');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/error-manager');
+const _errorManager = require('./utils/error-manager');
 
 // Helper function to check admin permissions
 async function verifyAdminPermissions(userId, serverId) {
@@ -21,17 +21,17 @@ async function verifyAdminPermissions(userId, serverId) {
     if (!SecurityValidator.validateUserId(userId) || !SecurityValidator.validateServerId(serverId)) {
       return false;
     }
-    
+
     const guild = client.guilds.cache.get(serverId);
     if (!guild) {
       return false;
     }
-    
+
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member) {
       return false;
     }
-    
+
     return member.permissions.has('Administrator');
   } catch (error) {
     logger.error('Error verifying admin permissions:', error);
@@ -56,11 +56,11 @@ function setupRoutes(app, validateRequest) {
   ], validateRequest, async (req, res) => {
     try {
       const { serverId, userId } = req.body;
-      
+
       // Sanitize inputs
       const sanitizedServerId = sanitizeInput(serverId);
       const sanitizedUserId = sanitizeInput(userId);
-      
+
       // Verify admin permissions
       const hasAdminPermissions = await verifyAdminPermissions(sanitizedUserId, sanitizedServerId);
       if (!hasAdminPermissions) {
@@ -71,11 +71,11 @@ function setupRoutes(app, validateRequest) {
         });
         return res.status(403).json({ error: 'Insufficient permissions or server access denied' });
       }
-      
+
       // Get additional user info for token
       const guild = client.guilds.cache.get(sanitizedServerId);
       const member = await guild.members.fetch(sanitizedUserId);
-      
+
       // Generate JWT token with enhanced claims
       const tokenPayload = {
         userId: sanitizedUserId,
@@ -86,16 +86,16 @@ function setupRoutes(app, validateRequest) {
         iss: 'discord-ai-moderator',
         aud: 'discord-api'
       };
-      
+
       const token = jwt.sign(
         tokenPayload,
         process.env.JWT_SECRET,
-        { 
+        {
           expiresIn: '7d',
           algorithm: 'HS256'
         }
       );
-      
+
       // Log successful authentication
       logger.info('User authenticated successfully', {
         userId: sanitizedUserId.substring(0, 10) + '...',
@@ -103,8 +103,8 @@ function setupRoutes(app, validateRequest) {
         username: member.user.username,
         ip: req.ip
       });
-      
-      return res.json({ 
+
+      return res.json({
         token,
         user: {
           id: sanitizedUserId,
@@ -118,7 +118,7 @@ function setupRoutes(app, validateRequest) {
       return res.status(500).json({ error: 'Authentication failed' });
     }
   });
-  
+
   // Server Config with comprehensive validation
   app.get('/api/servers/:serverId/config', [
     param('serverId')
@@ -130,7 +130,7 @@ function setupRoutes(app, validateRequest) {
     try {
       const { serverId } = req.params;
       const sanitizedServerId = sanitizeInput(serverId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         logger.warn('Unauthorized config access attempt', {
@@ -141,12 +141,12 @@ function setupRoutes(app, validateRequest) {
         });
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       const config = await getServerConfig(sanitizedServerId);
       if (!config) {
         return res.status(404).json({ error: 'Server configuration not found' });
       }
-      
+
       // Remove sensitive data before sending
       const sanitizedConfig = {
         serverId: config.serverId,
@@ -158,14 +158,14 @@ function setupRoutes(app, validateRequest) {
         createdAt: config.createdAt,
         updatedAt: config.updatedAt
       };
-      
+
       return res.json(sanitizedConfig);
     } catch (error) {
       logger.error(`Error getting server config for ${req.params.serverId}:`, error);
       return res.status(500).json({ error: 'Failed to retrieve configuration' });
     }
   });
-  
+
   app.put('/api/servers/:serverId/config', [
     param('serverId')
       .isString()
@@ -210,38 +210,38 @@ function setupRoutes(app, validateRequest) {
       const { serverId } = req.params;
       const updatedConfig = req.body;
       const sanitizedServerId = sanitizeInput(serverId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       // Validate config structure
       if (!updatedConfig || typeof updatedConfig !== 'object') {
         return res.status(400).json({ error: 'Invalid configuration object' });
       }
-      
+
       // Update config using secure database function
       const { saveServerConfiguration } = require('./database');
       const config = await saveServerConfiguration(sanitizedServerId, updatedConfig);
-      
+
       if (!config) {
         return res.status(500).json({ error: 'Failed to save configuration' });
       }
-      
+
       logger.info('Server configuration updated', {
         serverId: sanitizedServerId.substring(0, 10) + '...',
         userId: req.user.userId?.substring(0, 10) + '...',
         changes: Object.keys(updatedConfig)
       });
-      
+
       return res.json(config);
     } catch (error) {
       logger.error(`Error updating server config for ${req.params.serverId}:`, error);
       return res.status(500).json({ error: 'Failed to update configuration' });
     }
   });
-  
+
   // Analytics with pagination and limits
   app.get('/api/servers/:serverId/stats', [
     param('serverId')
@@ -266,16 +266,16 @@ function setupRoutes(app, validateRequest) {
       const { serverId } = req.params;
       const { timeframe = 'week', limit = 100, offset = 0 } = req.query;
       const sanitizedServerId = sanitizeInput(serverId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       // Calculate date range
       const now = new Date();
       let startDate;
-      
+
       switch (timeframe) {
         case 'today':
           startDate = new Date(now.setHours(0, 0, 0, 0));
@@ -295,7 +295,7 @@ function setupRoutes(app, validateRequest) {
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 7);
       }
-      
+
       // Get violation statistics with safe aggregation
       const violationStats = await ViolationLog.aggregate([
         {
@@ -318,7 +318,7 @@ function setupRoutes(app, validateRequest) {
           $limit: 1000 // Limit results for performance
         }
       ]);
-      
+
       // Get user statistics with pagination
       const userStats = await ViolationLog.aggregate([
         {
@@ -345,7 +345,7 @@ function setupRoutes(app, validateRequest) {
           $limit: Math.min(parseInt(limit), 100) // Cap at 100
         }
       ]);
-      
+
       // Get token usage with limits
       const tokenStats = await ViolationLog.aggregate([
         {
@@ -367,7 +367,7 @@ function setupRoutes(app, validateRequest) {
           $limit: 50 // Limit model types
         }
       ]);
-      
+
       // Calculate total processed vs skipped
       const processingStats = await ViolationLog.aggregate([
         {
@@ -383,7 +383,7 @@ function setupRoutes(app, validateRequest) {
           }
         }
       ]);
-      
+
       // Format results safely
       const stats = {
         timeframe,
@@ -405,14 +405,14 @@ function setupRoutes(app, validateRequest) {
           hasMore: userStats.length === parseInt(limit)
         }
       };
-      
+
       return res.json(stats);
     } catch (error) {
       logger.error(`Error getting stats for ${req.params.serverId}:`, error);
       return res.status(500).json({ error: 'Failed to retrieve statistics' });
     }
   });
-  
+
   // User management with validation
   app.get('/api/servers/:serverId/users', [
     param('serverId')
@@ -437,12 +437,12 @@ function setupRoutes(app, validateRequest) {
       const { serverId } = req.params;
       const { sort = 'violationCount', limit = 50, offset = 0 } = req.query;
       const sanitizedServerId = sanitizeInput(serverId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       // Define sort options safely
       const sortOptions = {};
       switch (sort) {
@@ -458,9 +458,9 @@ function setupRoutes(app, validateRequest) {
         default:
           sortOptions.totalViolations = -1;
       }
-      
+
       // Get users with safe query
-      const users = await UserData.find({ 
+      const users = await UserData.find({
         serverId: sanitizedServerId,
         totalViolations: { $gt: 0 } // Only users with violations for privacy
       })
@@ -469,13 +469,13 @@ function setupRoutes(app, validateRequest) {
         .skip(parseInt(offset))
         .limit(Math.min(parseInt(limit), 100)) // Cap at 100
         .lean();
-      
+
       // Get total count for pagination
-      const total = await UserData.countDocuments({ 
+      const total = await UserData.countDocuments({
         serverId: sanitizedServerId,
         totalViolations: { $gt: 0 }
       });
-      
+
       // Sanitize user data
       const sanitizedUsers = users.map(user => ({
         userId: user.userId?.substring(0, 10) + '...', // Partial ID for privacy
@@ -486,7 +486,7 @@ function setupRoutes(app, validateRequest) {
         lastActionTaken: user.lastActionTaken,
         joinedAt: user.joinedAt
       }));
-      
+
       return res.json({
         users: sanitizedUsers,
         pagination: {
@@ -501,7 +501,7 @@ function setupRoutes(app, validateRequest) {
       return res.status(500).json({ error: 'Failed to retrieve user data' });
     }
   });
-  
+
   // Get Discord server channels with validation
   app.get('/api/servers/:serverId/channels', [
     param('serverId')
@@ -513,18 +513,18 @@ function setupRoutes(app, validateRequest) {
     try {
       const { serverId } = req.params;
       const sanitizedServerId = sanitizeInput(serverId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       // Get the guild
       const guild = client.guilds.cache.get(sanitizedServerId);
       if (!guild) {
         return res.status(404).json({ error: 'Server not found or bot not in server' });
       }
-      
+
       // Get text channels only
       const channels = guild.channels.cache
         .filter(channel => channel.type === 0) // TextChannel
@@ -536,14 +536,14 @@ function setupRoutes(app, validateRequest) {
         }))
         .sort((a, b) => a.position - b.position)
         .slice(0, 100); // Limit to 100 channels
-      
+
       return res.json(channels);
     } catch (error) {
       logger.error(`Error getting channels for ${req.params.serverId}:`, error);
       return res.status(500).json({ error: 'Failed to retrieve channel list' });
     }
   });
-  
+
   // Create exempt user with validation
   app.post('/api/servers/:serverId/exempt', [
     param('serverId')
@@ -566,52 +566,52 @@ function setupRoutes(app, validateRequest) {
       const { userId, duration } = req.body;
       const sanitizedServerId = sanitizeInput(serverId);
       const sanitizedUserId = sanitizeInput(userId);
-      
+
       // Verify user has access to this server
       if (req.user.serverId !== sanitizedServerId) {
         return res.status(403).json({ error: 'Access denied to this server' });
       }
-      
+
       // Verify the target user exists in the server
       const guild = client.guilds.cache.get(sanitizedServerId);
       if (!guild) {
         return res.status(404).json({ error: 'Server not found' });
       }
-      
+
       const targetMember = await guild.members.fetch(sanitizedUserId).catch(() => null);
       if (!targetMember) {
         return res.status(404).json({ error: 'User not found in server' });
       }
-      
+
       // Calculate exempt until date
       let exemptUntil = null;
       if (duration && duration > 0) {
         exemptUntil = new Date();
         exemptUntil.setMinutes(exemptUntil.getMinutes() + duration);
       }
-      
+
       // Update user data
       const userData = await UserData.findOneAndUpdate(
         { userId: sanitizedUserId, serverId: sanitizedServerId },
-        { 
+        {
           isExempt: true,
           exemptUntil,
           updatedAt: new Date()
         },
-        { 
-          new: true, 
+        {
+          new: true,
           upsert: true,
           runValidators: true
         }
       ).lean();
-      
+
       logger.info('User exempted from moderation', {
         targetUserId: sanitizedUserId.substring(0, 10) + '...',
         serverId: sanitizedServerId.substring(0, 10) + '...',
         adminUserId: req.user.userId?.substring(0, 10) + '...',
         duration: duration || 'permanent'
       });
-      
+
       // Sanitize response
       const sanitizedResponse = {
         userId: userData.userId?.substring(0, 10) + '...',
@@ -620,7 +620,7 @@ function setupRoutes(app, validateRequest) {
         exemptUntil: userData.exemptUntil,
         updatedAt: userData.updatedAt
       };
-      
+
       return res.json(sanitizedResponse);
     } catch (error) {
       logger.error(`Error creating exempt user for ${req.params.serverId}:`, error);

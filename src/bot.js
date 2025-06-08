@@ -2,7 +2,7 @@ const SecurityValidator = require("./utils/security-validator");
 const { Client, GatewayIntentBits, Events, Partials } = require('discord.js');
 const { processMessage } = require('./moderator');
 const { handleCommandInteraction } = require('./commands');
-const { validateServerId, validateUserId } = require('./database');
+// These imports are not used - the validation functions are from SecurityValidator
 const logger = require('./utils/logger');
 const errorManager = require('./utils/error-manager');
 
@@ -15,8 +15,13 @@ if (!process.env.CLIENT_ID) {
   throw new Error('CLIENT_ID is required');
 }
 
-if (!process.env.DISCORD_BOT_TOKEN.length > 50) {
+if (process.env.DISCORD_BOT_TOKEN.length <= 50) {
   throw new Error('Invalid Discord bot token format');
+}
+
+// Additional validation for token format
+if (!process.env.DISCORD_BOT_TOKEN.match(/^[A-Za-z0-9._-]+$/)) {
+  throw new Error('Discord bot token contains invalid characters');
 }
 
 // if (!SecurityValidator.validateUserId(process.env.CLIENT_ID)) {

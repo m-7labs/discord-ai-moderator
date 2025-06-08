@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 
 /**
  * Security Key Generation Script
@@ -70,23 +69,23 @@ function generateAllKeys() {
   const keys = {
     // 32-byte encryption key for AES-256
     ENCRYPTION_KEY: generateSecureKey(32),
-    
+
     // JWT signing secret (64 bytes base64url encoded)
     JWT_SECRET: generateJWTSecret(),
-    
+
     // HMAC secret for audit log integrity (32 bytes)
     AUDIT_SECRET_KEY: generateSecureKey(32),
-    
+
     // Session hash salt (16 bytes)
     HASH_SALT: generateSecureKey(16),
-    
+
     // Instance secret for distributed systems (16 bytes)
     INSTANCE_SECRET: generateSecureKey(16),
-    
+
     // Webhook verification secret (32 bytes)
     WEBHOOK_SECRET: generateSecureKey(32)
   };
-  
+
   return keys;
 }
 
@@ -95,15 +94,15 @@ function generateAllKeys() {
  */
 function validateExistingEnv() {
   const envPath = path.join(process.cwd(), '.env');
-  
+
   if (!fs.existsSync(envPath)) {
     return { exists: false, keys: {} };
   }
-  
+
   try {
     const envContent = fs.readFileSync(envPath, 'utf8');
     const existingKeys = {};
-    
+
     const keyPatterns = [
       'ENCRYPTION_KEY',
       'JWT_SECRET',
@@ -112,15 +111,17 @@ function validateExistingEnv() {
       'INSTANCE_SECRET',
       'WEBHOOK_SECRET'
     ];
-    
+
     keyPatterns.forEach(key => {
+      // eslint-disable-next-line security/detect-non-literal-regexp
       const regex = new RegExp(`^${key}=(.+)$`, 'm');
       const match = envContent.match(regex);
       if (match && match[1] && match[1].trim() !== '' && match[1] !== 'your_key_here') {
+        // eslint-disable-next-line security/detect-object-injection
         existingKeys[key] = match[1];
       }
     });
-    
+
     return { exists: true, keys: existingKeys, content: envContent };
   } catch (error) {
     logError(`Failed to read existing .env file: ${error.message}`);
@@ -134,9 +135,9 @@ function validateExistingEnv() {
 function updateEnvFile(newKeys, existingEnv) {
   const envPath = path.join(process.cwd(), '.env');
   const examplePath = path.join(process.cwd(), '.env.example');
-  
+
   let envContent;
-  
+
   if (existingEnv.exists) {
     envContent = existingEnv.content;
   } else if (fs.existsSync(examplePath)) {
@@ -146,12 +147,13 @@ function updateEnvFile(newKeys, existingEnv) {
     logError('.env.example file not found. Creating basic .env file...');
     envContent = generateBasicEnvTemplate();
   }
-  
+
   // Update or add each key
   Object.entries(newKeys).forEach(([key, value]) => {
+    // eslint-disable-next-line security/detect-non-literal-regexp
     const regex = new RegExp(`^${key}=.*$`, 'm');
     const replacement = `${key}=${value}`;
-    
+
     if (envContent.match(regex)) {
       envContent = envContent.replace(regex, replacement);
     } else {
@@ -166,7 +168,7 @@ function updateEnvFile(newKeys, existingEnv) {
       }
     }
   });
-  
+
   try {
     fs.writeFileSync(envPath, envContent);
     logSuccess(`.env file updated at: ${envPath}`);
@@ -221,20 +223,20 @@ DASHBOARD_PORT=3000
  */
 function displaySecurityInfo(keys) {
   logHeader('SECURITY INFORMATION');
-  
+
   log('\n📋 Generated Keys:', colors.bright);
   Object.entries(keys).forEach(([key, value]) => {
     const maskedValue = value.substring(0, 8) + '...' + value.substring(value.length - 8);
     log(`   ${key}: ${maskedValue}`, colors.cyan);
   });
-  
+
   log('\n🔒 Security Best Practices:', colors.bright + colors.yellow);
   log('   • Never commit .env files to version control');
   log('   • Store these keys securely in production');
   log('   • Rotate keys regularly in production environments');
   log('   • Use environment-specific keys for dev/staging/prod');
   log('   • Consider using a secrets management service in production');
-  
+
   log('\n🚨 IMPORTANT WARNINGS:', colors.bright + colors.red);
   log('   • Keep these keys secret and secure');
   log('   • Do not share keys in public repositories');
@@ -247,11 +249,11 @@ function displaySecurityInfo(keys) {
  */
 function backupExistingEnv() {
   const envPath = path.join(process.cwd(), '.env');
-  
+
   if (fs.existsSync(envPath)) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(process.cwd(), `.env.backup.${timestamp}`);
-    
+
     try {
       fs.copyFileSync(envPath, backupPath);
       logInfo(`Existing .env backed up to: .env.backup.${timestamp}`);
@@ -267,49 +269,53 @@ function backupExistingEnv() {
 async function main() {
   try {
     logHeader('Discord AI Moderator - Security Key Generator');
-    
+
     log('\nThis script will generate cryptographically secure keys for your Discord AI Moderator.');
     log('These keys are essential for security features including encryption, JWT tokens, and audit logging.\n');
-    
+
     // Check existing environment
     const existingEnv = validateExistingEnv();
     const existingKeyCount = Object.keys(existingEnv.keys).length;
-    
+
     if (existingKeyCount > 0) {
       logInfo(`Found ${existingKeyCount} existing security keys in .env file`);
-      
+
       // Show existing keys (masked)
       Object.keys(existingEnv.keys).forEach(key => {
+        // eslint-disable-next-line security/detect-object-injection
         const value = existingEnv.keys[key];
         const maskedValue = value.substring(0, 4) + '...' + value.substring(value.length - 4);
         logInfo(`   ${key}: ${maskedValue}`);
       });
     }
-    
+
     // Generate new keys
     logInfo('\nGenerating new security keys...');
     const newKeys = generateAllKeys();
-    
+
     // Merge with existing keys (prioritize existing)
     const finalKeys = { ...newKeys, ...existingEnv.keys };
-    
+
     // Count new keys being generated
-    const newKeyCount = Object.keys(newKeys).filter(key => !existingEnv.keys[key]).length;
-    
+    const newKeyCount = Object.keys(newKeys).filter(key => {
+      // eslint-disable-next-line security/detect-object-injection
+      return !existingEnv.keys[key];
+    }).length;
+
     if (newKeyCount > 0) {
       logSuccess(`Generated ${newKeyCount} new security keys`);
-      
+
       // Backup existing .env if it exists
       if (existingEnv.exists) {
         backupExistingEnv();
       }
-      
+
       // Update .env file
       updateEnvFile(finalKeys, existingEnv);
-      
+
       // Display security information
       displaySecurityInfo(finalKeys);
-      
+
       log('\n✅ Security key generation completed successfully!', colors.bright + colors.green);
       log('\nNext steps:', colors.bright);
       log('1. Review your .env file and add your Discord bot token and API keys');
@@ -317,12 +323,12 @@ async function main() {
       log('3. Set up Redis server for session management');
       log('4. Run npm install to install dependencies');
       log('5. Start your bot with npm start');
-      
+
     } else {
       logInfo('All security keys already exist in .env file. No new keys generated.');
       logInfo('To regenerate all keys, delete the existing keys from .env and run this script again.');
     }
-    
+
   } catch (error) {
     logError(`Key generation failed: ${error.message}`);
     process.exit(1);

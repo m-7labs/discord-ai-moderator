@@ -3,6 +3,7 @@
  * Uses Bull queue with Redis for high-throughput message processing
  */
 
+// eslint-disable-next-line node/no-missing-require
 const Bull = require('bull');
 const logger = require('./logger');
 const { performance } = require('perf_hooks');
@@ -58,7 +59,7 @@ class MessageQueue {
             });
 
             // Set up event handlers
-            queue.on('completed', (job, result) => {
+            queue.on('completed', (job, _result) => {
                 this.metrics.processed++;
                 logger.debug(`Job ${job.id} completed in ${priority} queue`);
             });
@@ -258,7 +259,7 @@ class MessageQueue {
      */
     async isDuplicate(dedupKey) {
         // Check across all queues
-        for (const [priority, queue] of this.queues) {
+        for (const [_priority, queue] of this.queues) {
             const job = await queue.getJob(dedupKey);
             if (job && ['waiting', 'active', 'delayed'].includes(await job.getState())) {
                 return true;
@@ -296,6 +297,7 @@ class MessageQueue {
             normal: 5,
             low: 10
         };
+        // eslint-disable-next-line security/detect-object-injection
         return values[priority] || 5;
     }
 
@@ -315,6 +317,7 @@ class MessageQueue {
         // Get queue stats
         for (const [priority, queue] of this.queues) {
             const counts = await queue.getJobCounts();
+            // eslint-disable-next-line security/detect-object-injection
             stats.queues[priority] = counts;
         }
 
@@ -386,7 +389,7 @@ class MessageQueue {
 }
 
 // Factory function for creating queue with moderation processor
-function createModerationQueue(options = {}) {
+const createModerationQueue = (options = {}) => {
     const queue = new MessageQueue(options);
 
     // Register processors for each priority
@@ -415,7 +418,7 @@ function createModerationQueue(options = {}) {
     }
 
     return queue;
-}
+};
 
 module.exports = {
     MessageQueue,

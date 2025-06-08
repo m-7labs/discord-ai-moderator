@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const logger = require('./utils/logger');
-const errorManager = require('./utils/error-manager');
+const _errorManager = require('./utils/error-manager');
 
 let db = null;
 let dbAsync = null;
@@ -11,53 +11,81 @@ let dbAsync = null;
 // Simple in-memory cache for frequently accessed data
 class SimpleCache {
   constructor(ttl = 300000) { // 5 minutes default TTL
+    if (typeof ttl !== 'number' || ttl <= 0) {
+      throw new Error('Cache TTL must be a positive number');
+    }
     this.cache = new Map();
     this.ttl = ttl;
     this.timers = new Map();
   }
 
   get(key) {
-    const item = this.cache.get(key);
-    if (item && Date.now() < item.expiry) {
-      return item.value;
+    if (!key) return null;
+
+    try {
+      const item = this.cache.get(key);
+      if (item && Date.now() < item.expiry) {
+        return item.value;
+      }
+      this.delete(key);
+    } catch (error) {
+      logger.error('Error in cache.get', { error: error.message, key });
     }
-    this.delete(key);
     return null;
   }
 
   set(key, value, customTtl = null) {
-    const ttl = customTtl || this.ttl;
-    this.cache.set(key, {
-      value,
-      expiry: Date.now() + ttl
-    });
+    if (!key) return;
 
-    // Clear existing timer
-    if (this.timers.has(key)) {
-      clearTimeout(this.timers.get(key));
+    try {
+      const ttl = (customTtl !== null && typeof customTtl === 'number' && customTtl > 0)
+        ? customTtl
+        : this.ttl;
+
+      this.cache.set(key, {
+        value,
+        expiry: Date.now() + ttl
+      });
+
+      // Clear existing timer
+      if (this.timers.has(key)) {
+        clearTimeout(this.timers.get(key));
+      }
+
+      // Set new timer for cleanup
+      const timer = setTimeout(() => {
+        this.delete(key);
+      }, ttl);
+      this.timers.set(key, timer);
+    } catch (error) {
+      logger.error('Error in cache.set', { error: error.message, key });
     }
-
-    // Set new timer for cleanup
-    const timer = setTimeout(() => {
-      this.delete(key);
-    }, ttl);
-    this.timers.set(key, timer);
   }
 
   delete(key) {
-    this.cache.delete(key);
-    if (this.timers.has(key)) {
-      clearTimeout(this.timers.get(key));
-      this.timers.delete(key);
+    if (!key) return;
+
+    try {
+      this.cache.delete(key);
+      if (this.timers.has(key)) {
+        clearTimeout(this.timers.get(key));
+        this.timers.delete(key);
+      }
+    } catch (error) {
+      logger.error('Error in cache.delete', { error: error.message, key });
     }
   }
 
   clear() {
-    for (const timer of this.timers.values()) {
-      clearTimeout(timer);
+    try {
+      for (const timer of this.timers.values()) {
+        clearTimeout(timer);
+      }
+      this.cache.clear();
+      this.timers.clear();
+    } catch (error) {
+      logger.error('Error in cache.clear', { error: error.message });
     }
-    this.cache.clear();
-    this.timers.clear();
   }
 
   size() {
@@ -72,70 +100,195 @@ const userCache = new SimpleCache(60000); // 1 minute for user data
 // Async wrapper for SQLite operations
 class AsyncDatabase {
   constructor(database) {
+    if (!database) {
+      throw new Error('Database instance is required');
+    }
     this.db = database;
     this.statements = new Map();
+    this.stmtUsageCount = new Map(); // Track usage for potential cleanup
   }
 
   run(sql, params = []) {
+    if (!sql) {
+      return Promise.reject(new Error('SQL query is required'));
+    }
+
     return new Promise((resolve, reject) => {
-      this.db.run(sql, params, function (err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
+      try {
+        this.db.run(sql, params, function (err) {
+          if (err) {
+            logger.error('SQL run error', { error: err.message, sql });
+            reject(err);
+          } else {
+            resolve({ lastID: this.lastID, changes: this.changes });
+          }
+        });
+      } catch (error) {
+        logger.error('Unexpected error in run', { error: error.message, sql });
+        reject(error);
+      }
     });
   }
 
   get(sql, params = []) {
+    if (!sql) {
+      return Promise.reject(new Error('SQL query is required'));
+    }
+
     return new Promise((resolve, reject) => {
-      this.db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
+      try {
+        this.db.get(sql, params, (err, row) => {
+          if (err) {
+            logger.error('SQL get error', { error: err.message, sql });
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        });
+      } catch (error) {
+        logger.error('Unexpected error in get', { error: error.message, sql });
+        reject(error);
+      }
     });
   }
 
   all(sql, params = []) {
+    if (!sql) {
+      return Promise.reject(new Error('SQL query is required'));
+    }
+
     return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
+      try {
+        this.db.all(sql, params, (err, rows) => {
+          if (err) {
+            logger.error('SQL all error', { error: err.message, sql });
+            reject(err);
+          } else {
+            resolve(rows || []);
+          }
+        });
+      } catch (error) {
+        logger.error('Unexpected error in all', { error: error.message, sql });
+        reject(error);
+      }
     });
   }
 
   prepare(key, sql) {
-    if (!this.statements.has(key)) {
-      this.statements.set(key, this.db.prepare(sql));
+    if (!key || !sql) {
+      throw new Error('Statement key and SQL query are required');
     }
-    return this.statements.get(key);
+
+    try {
+      if (!this.statements.has(key)) {
+        this.statements.set(key, this.db.prepare(sql));
+        this.stmtUsageCount.set(key, 0);
+      }
+
+      // Increment usage count
+      this.stmtUsageCount.set(key, this.stmtUsageCount.get(key) + 1);
+
+      return this.statements.get(key);
+    } catch (error) {
+      logger.error('Error preparing statement', { error: error.message, key, sql });
+      throw error;
+    }
   }
 
   async runPrepared(key, sql, params = []) {
-    const stmt = this.prepare(key, sql);
-    return new Promise((resolve, reject) => {
-      stmt.run(params, function (err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
+    if (!key || !sql) {
+      return Promise.reject(new Error('Statement key and SQL query are required'));
+    }
+
+    try {
+      const stmt = this.prepare(key, sql);
+
+      return new Promise((resolve, reject) => {
+        stmt.run(params, function (err) {
+          if (err) {
+            logger.error('Prepared statement run error', { error: err.message, key });
+            reject(err);
+          } else {
+            resolve({ lastID: this.lastID, changes: this.changes });
+          }
+        });
       });
-    });
+    } catch (error) {
+      logger.error('Error in runPrepared', { error: error.message, key });
+      return Promise.reject(error);
+    } finally {
+      this.checkStatementCleanup(key);
+    }
   }
 
   async getPrepared(key, sql, params = []) {
-    const stmt = this.prepare(key, sql);
-    return new Promise((resolve, reject) => {
-      stmt.get(params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
+    if (!key || !sql) {
+      return Promise.reject(new Error('Statement key and SQL query are required'));
+    }
+
+    try {
+      const stmt = this.prepare(key, sql);
+
+      return new Promise((resolve, reject) => {
+        stmt.get(params, (err, row) => {
+          if (err) {
+            logger.error('Prepared statement get error', { error: err.message, key });
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        });
       });
-    });
+    } catch (error) {
+      logger.error('Error in getPrepared', { error: error.message, key });
+      return Promise.reject(error);
+    } finally {
+      this.checkStatementCleanup(key);
+    }
+  }
+
+  // Check if statement should be cleaned up (after high usage)
+  checkStatementCleanup(key) {
+    const CLEANUP_THRESHOLD = 1000; // Cleanup after 1000 uses
+
+    if (this.stmtUsageCount.get(key) > CLEANUP_THRESHOLD) {
+      try {
+        this.finalizeStatement(key);
+        // Re-prepare on next use
+        this.stmtUsageCount.set(key, 0);
+      } catch (error) {
+        logger.error('Error in statement cleanup', { error: error.message, key });
+      }
+    }
+  }
+
+  // Finalize a specific prepared statement
+  finalizeStatement(key) {
+    if (this.statements.has(key)) {
+      try {
+        this.statements.get(key).finalize();
+        this.statements.delete(key);
+      } catch (error) {
+        logger.error('Error finalizing statement', { error: error.message, key });
+      }
+    }
   }
 
   close() {
-    // Finalize all prepared statements
-    for (const stmt of this.statements.values()) {
-      stmt.finalize();
+    try {
+      // Finalize all prepared statements
+      for (const [key, stmt] of this.statements.entries()) {
+        try {
+          stmt.finalize();
+        } catch (error) {
+          logger.error('Error finalizing statement during close', { error: error.message, key });
+        }
+      }
+      this.statements.clear();
+      this.stmtUsageCount.clear();
+    } catch (error) {
+      logger.error('Error in database close', { error: error.message });
     }
-    this.statements.clear();
   }
 }
 
@@ -147,8 +300,18 @@ function setupDatabase() {
 
       // Ensure data directory exists
       const dataDir = path.dirname(dbPath);
-      if (!fs.existsSync(dataDir)) {
+
+      // Create directory directly with recursive option
+      // This is safer than checking existence first, as it avoids race conditions
+      // and doesn't require using existsSync with a dynamic path
+      try {
         fs.mkdirSync(dataDir, { recursive: true });
+      } catch (dirError) {
+        // Only throw if it's not an "already exists" error
+        if (dirError.code !== 'EEXIST') {
+          logger.error('Failed to create data directory', { error: dirError.message, path: dataDir });
+          throw dirError;
+        }
       }
 
       // Initialize database connection
@@ -298,15 +461,22 @@ async function createTables() {
 }
 
 // Server Configuration Operations
-async function getServerConfig(serverId, options = {}) {
+async function getServerConfig(serverId, _options = {}) {
   try {
-    // Simple validation
-    if (!serverId || typeof serverId !== 'string') {
+    // Enhanced validation
+    if (!serverId || typeof serverId !== 'string' || serverId.trim() === '') {
+      logger.warn('Invalid server ID provided to getServerConfig', { serverId });
       return null;
     }
 
+    // Sanitize server ID (remove any potential SQL injection characters)
+    const sanitizedServerId = serverId.replace(/[^\w-]/g, '');
+    if (sanitizedServerId !== serverId) {
+      logger.warn('Server ID contained invalid characters', { original: serverId, sanitized: sanitizedServerId });
+    }
+
     // Check cache first
-    const cacheKey = `config:${serverId}`;
+    const cacheKey = `config:${sanitizedServerId}`;
     const cached = configCache.get(cacheKey);
     if (cached) {
       return cached;
@@ -315,50 +485,163 @@ async function getServerConfig(serverId, options = {}) {
     const row = await dbAsync.getPrepared(
       'getServerConfig',
       'SELECT * FROM server_configs WHERE server_id = ?',
-      [serverId]
+      [sanitizedServerId]
     );
 
     if (!row) {
       // Create default config
-      const config = await createServerConfig(serverId);
+      logger.info('No configuration found, creating default', { serverId: sanitizedServerId });
+      const config = await createServerConfig(sanitizedServerId);
       return config;
     }
 
-    // Parse JSON fields
+    // Parse JSON fields with validation - handle each field explicitly to avoid object injection
+    const parsedRow = { ...row };
+
+    // Safely parse channels
     try {
-      if (row.channels) row.channels = JSON.parse(row.channels);
-      if (row.custom_keywords) row.custom_keywords = JSON.parse(row.custom_keywords);
-      if (row.exempt_roles) row.exempt_roles = JSON.parse(row.exempt_roles);
-      if (row.moderator_roles) row.moderator_roles = JSON.parse(row.moderator_roles);
+      parsedRow.channels = parsedRow.channels ?
+        (Array.isArray(JSON.parse(parsedRow.channels)) ? JSON.parse(parsedRow.channels) : []) :
+        [];
     } catch (parseErr) {
-      logger.error('Failed to parse server config JSON', { error: parseErr.message });
+      logger.error('Failed to parse channels JSON', {
+        error: parseErr.message,
+        serverId: sanitizedServerId
+      });
+      parsedRow.channels = [];
+    }
+
+    // Safely parse custom_keywords
+    try {
+      parsedRow.custom_keywords = parsedRow.custom_keywords ?
+        (Array.isArray(JSON.parse(parsedRow.custom_keywords)) ? JSON.parse(parsedRow.custom_keywords) : []) :
+        [];
+    } catch (parseErr) {
+      logger.error('Failed to parse custom_keywords JSON', {
+        error: parseErr.message,
+        serverId: sanitizedServerId
+      });
+      parsedRow.custom_keywords = [];
+    }
+
+    // Safely parse exempt_roles
+    try {
+      parsedRow.exempt_roles = parsedRow.exempt_roles ?
+        (Array.isArray(JSON.parse(parsedRow.exempt_roles)) ? JSON.parse(parsedRow.exempt_roles) : []) :
+        [];
+    } catch (parseErr) {
+      logger.error('Failed to parse exempt_roles JSON', {
+        error: parseErr.message,
+        serverId: sanitizedServerId
+      });
+      parsedRow.exempt_roles = [];
+    }
+
+    // Safely parse moderator_roles
+    try {
+      parsedRow.moderator_roles = parsedRow.moderator_roles ?
+        (Array.isArray(JSON.parse(parsedRow.moderator_roles)) ? JSON.parse(parsedRow.moderator_roles) : []) :
+        [];
+    } catch (parseErr) {
+      logger.error('Failed to parse moderator_roles JSON', {
+        error: parseErr.message,
+        serverId: sanitizedServerId
+      });
+      parsedRow.moderator_roles = [];
+    }
+
+    // Validate numeric fields
+    parsedRow.strictness = Number.isInteger(parsedRow.strictness) &&
+      parsedRow.strictness >= 1 &&
+      parsedRow.strictness <= 10 ?
+      parsedRow.strictness : 5;
+
+    parsedRow.action_threshold = Number.isInteger(parsedRow.action_threshold) &&
+      parsedRow.action_threshold >= 1 ?
+      parsedRow.action_threshold : 3;
+
+    // Validate boolean fields
+    parsedRow.enabled = Boolean(parsedRow.enabled);
+    parsedRow.auto_action = Boolean(parsedRow.auto_action);
+
+    // Verify data integrity with hash
+    const expectedHash = crypto.createHash('sha256')
+      .update(JSON.stringify({
+        rules: parsedRow.rules,
+        strictness: parsedRow.strictness,
+        enabled: parsedRow.enabled
+      }))
+      .digest('hex');
+
+    if (parsedRow.data_hash !== expectedHash) {
+      logger.warn('Server config data hash mismatch', {
+        serverId: sanitizedServerId,
+        expected: expectedHash,
+        actual: parsedRow.data_hash
+      });
+      // We'll still use the data but log the integrity issue
     }
 
     // Cache the result
-    configCache.set(cacheKey, row);
+    configCache.set(cacheKey, parsedRow);
 
-    return row;
+    return parsedRow;
   } catch (error) {
-    logger.error('Error in getServerConfig', { error: error.message });
+    logger.error('Error in getServerConfig', { error: error.message, serverId });
     return null;
   }
 }
 
 async function createServerConfig(serverId, config = {}) {
   try {
+    // Enhanced validation
+    if (!serverId || typeof serverId !== 'string' || serverId.trim() === '') {
+      logger.warn('Invalid server ID provided to createServerConfig', { serverId });
+      return null;
+    }
+
+    // Sanitize server ID
+    const sanitizedServerId = serverId.replace(/[^\w-]/g, '');
+    if (sanitizedServerId !== serverId) {
+      logger.warn('Server ID contained invalid characters', { original: serverId, sanitized: sanitizedServerId });
+    }
+
+    // Validate and sanitize input config
+    const validatedConfig = {
+      server_id: sanitizedServerId,
+      enabled: typeof config.enabled === 'boolean' ? config.enabled : true,
+      channels: Array.isArray(config.channels) ? config.channels : [],
+      rules: typeof config.rules === 'string' && config.rules.trim() !== '' ?
+        config.rules.substring(0, 2000) : 'Default moderation rules',
+      strictness: Number.isInteger(config.strictness) &&
+        config.strictness >= 1 &&
+        config.strictness <= 10 ?
+        config.strictness : 5,
+      customKeywords: Array.isArray(config.customKeywords) ? config.customKeywords : [],
+      exemptRoles: Array.isArray(config.exemptRoles) ? config.exemptRoles : [],
+      moderatorRoles: Array.isArray(config.moderatorRoles) ? config.moderatorRoles : [],
+      autoAction: typeof config.autoAction === 'boolean' ? config.autoAction : false,
+      actionThreshold: Number.isInteger(config.actionThreshold) &&
+        config.actionThreshold >= 1 ?
+        config.actionThreshold : 3,
+      notificationChannel: config.notificationChannel || null,
+      logChannel: config.logChannel || null
+    };
+
+    // Safely stringify JSON fields
     const defaultConfig = {
-      server_id: serverId,
-      enabled: config.enabled !== undefined ? config.enabled : true,
-      channels: JSON.stringify(config.channels || []),
-      rules: config.rules || 'Default moderation rules',
-      strictness: config.strictness || 5,
-      custom_keywords: JSON.stringify(config.customKeywords || []),
-      exempt_roles: JSON.stringify(config.exemptRoles || []),
-      moderator_roles: JSON.stringify(config.moderatorRoles || []),
-      auto_action: config.autoAction || false,
-      action_threshold: config.actionThreshold || 3,
-      notification_channel: config.notificationChannel || null,
-      log_channel: config.logChannel || null
+      server_id: validatedConfig.server_id,
+      enabled: validatedConfig.enabled,
+      channels: JSON.stringify(validatedConfig.channels),
+      rules: validatedConfig.rules,
+      strictness: validatedConfig.strictness,
+      custom_keywords: JSON.stringify(validatedConfig.customKeywords),
+      exempt_roles: JSON.stringify(validatedConfig.exemptRoles),
+      moderator_roles: JSON.stringify(validatedConfig.moderatorRoles),
+      auto_action: validatedConfig.autoAction,
+      action_threshold: validatedConfig.actionThreshold,
+      notification_channel: validatedConfig.notificationChannel,
+      log_channel: validatedConfig.logChannel
     };
 
     // Create data hash for integrity
@@ -395,13 +678,13 @@ async function createServerConfig(serverId, config = {}) {
     await dbAsync.runPrepared('createServerConfig', sql, params);
 
     // Clear cache for this server
-    configCache.delete(`config:${serverId}`);
+    configCache.delete(`config:${sanitizedServerId}`);
 
     // Return the created config
-    const createdConfig = await getServerConfig(serverId);
+    const createdConfig = await getServerConfig(sanitizedServerId);
     return createdConfig;
   } catch (error) {
-    logger.error('Error in createServerConfig', { error: error.message });
+    logger.error('Error in createServerConfig', { error: error.message, serverId });
     return null;
   }
 }
@@ -409,43 +692,74 @@ async function createServerConfig(serverId, config = {}) {
 // Violation Logging
 async function logViolation(action, options = {}) {
   try {
-    if (!action.serverId || !action.userId) {
+    // Enhanced validation
+    if (!action || typeof action !== 'object') {
+      logger.warn('Invalid action object provided to logViolation');
       return null;
     }
 
+    if (!action.serverId || typeof action.serverId !== 'string' || action.serverId.trim() === '') {
+      logger.warn('Invalid server ID provided to logViolation', { serverId: action.serverId });
+      return null;
+    }
+
+    if (!action.userId || typeof action.userId !== 'string' || action.userId.trim() === '') {
+      logger.warn('Invalid user ID provided to logViolation', { userId: action.userId });
+      return null;
+    }
+
+    // Sanitize server and user IDs
+    const sanitizedServerId = action.serverId.replace(/[^\w-]/g, '');
+    const sanitizedUserId = action.userId.replace(/[^\w-]/g, '');
+
+    if (sanitizedServerId !== action.serverId || sanitizedUserId !== action.userId) {
+      logger.warn('IDs contained invalid characters', {
+        originalServerId: action.serverId,
+        sanitizedServerId,
+        originalUserId: action.userId,
+        sanitizedUserId
+      });
+    }
+
+    // Validate and sanitize all fields
     const sanitizedAction = {
-      server_id: action.serverId,
-      user_id: action.userId,
-      message_id: action.messageId || '',
-      channel_id: action.channelId || '',
-      content: action.content ? action.content.substring(0, 2000) : null,
+      server_id: sanitizedServerId,
+      user_id: sanitizedUserId,
+      message_id: action.messageId ? String(action.messageId).substring(0, 100) : '',
+      channel_id: action.channelId ? String(action.channelId).substring(0, 100) : '',
+      content: action.content ? String(action.content).substring(0, 2000) : null,
       is_violation: Boolean(action.isViolation),
-      category: action.category || null,
-      severity: action.severity || null,
+      category: action.category ? String(action.category).substring(0, 100) : null,
+      severity: ['Low', 'Moderate', 'Severe'].includes(action.severity) ? action.severity : null,
       confidence_score: typeof action.confidenceScore === 'number' ?
         Math.max(0, Math.min(1, action.confidenceScore)) : null,
-      explanation: action.explanation ? action.explanation.substring(0, 1000) : null,
-      suggested_action: action.suggestedAction || null,
-      action_taken: action.actionTaken || null,
+      explanation: action.explanation ? String(action.explanation).substring(0, 1000) : null,
+      suggested_action: action.suggestedAction ? String(action.suggestedAction).substring(0, 100) : null,
+      action_taken: action.actionTaken ? String(action.actionTaken).substring(0, 100) : null,
       human_reviewed: Boolean(action.humanReviewed),
-      reviewer_id: action.reviewerId || null,
-      review_notes: action.reviewNotes || null,
-      model_used: action.modelUsed ? action.modelUsed.substring(0, 100) : null,
+      reviewer_id: action.reviewerId ? String(action.reviewerId).substring(0, 100) : null,
+      review_notes: action.reviewNotes ? String(action.reviewNotes).substring(0, 500) : null,
+      model_used: action.modelUsed ? String(action.modelUsed).substring(0, 100) : null,
       provider: ['ANTHROPIC', 'OPENROUTER'].includes(action.provider) ? action.provider : null,
       tokens_used: typeof action.tokensUsed === 'number' && action.tokensUsed >= 0 ?
         Math.min(action.tokensUsed, 1000000) : null,
       processing_time_ms: typeof action.processingTimeMs === 'number' && action.processingTimeMs >= 0 ?
         Math.min(action.processingTimeMs, 300000) : null,
-      ip_address_hash: options.ip ? crypto.createHash('sha256').update(options.ip).digest('hex') : null,
-      session_id: options.sessionId || null,
-      request_id: options.requestId || crypto.randomUUID()
+      ip_address_hash: options.ip ? crypto.createHash('sha256').update(String(options.ip)).digest('hex') : null,
+      session_id: options.sessionId ? String(options.sessionId).substring(0, 100) : null,
+      request_id: options.requestId ? String(options.requestId).substring(0, 100) : crypto.randomUUID()
     };
 
     // Create content hash if content exists
     if (sanitizedAction.content) {
-      sanitizedAction.content_hash = crypto.createHash('sha256')
-        .update(sanitizedAction.content)
-        .digest('hex');
+      try {
+        sanitizedAction.content_hash = crypto.createHash('sha256')
+          .update(sanitizedAction.content)
+          .digest('hex');
+      } catch (hashError) {
+        logger.error('Error creating content hash', { error: hashError.message });
+        sanitizedAction.content_hash = null;
+      }
     }
 
     const sql = `INSERT INTO violation_logs (
@@ -459,9 +773,9 @@ async function logViolation(action, options = {}) {
     const params = [
       sanitizedAction.server_id, sanitizedAction.user_id, sanitizedAction.message_id,
       sanitizedAction.channel_id, sanitizedAction.content, sanitizedAction.content_hash,
-      sanitizedAction.is_violation, sanitizedAction.category, sanitizedAction.severity,
+      sanitizedAction.is_violation ? 1 : 0, sanitizedAction.category, sanitizedAction.severity,
       sanitizedAction.confidence_score, sanitizedAction.explanation, sanitizedAction.suggested_action,
-      sanitizedAction.action_taken, sanitizedAction.human_reviewed, sanitizedAction.reviewer_id,
+      sanitizedAction.action_taken, sanitizedAction.human_reviewed ? 1 : 0, sanitizedAction.reviewer_id,
       sanitizedAction.review_notes, sanitizedAction.model_used, sanitizedAction.provider,
       sanitizedAction.tokens_used, sanitizedAction.processing_time_ms, sanitizedAction.ip_address_hash,
       sanitizedAction.session_id, sanitizedAction.request_id
@@ -478,8 +792,32 @@ async function logViolation(action, options = {}) {
 // User Data Operations
 async function getUserData(userId, serverId) {
   try {
+    // Input validation
+    if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+      logger.warn('Invalid user ID provided to getUserData', { userId });
+      return null;
+    }
+
+    if (!serverId || typeof serverId !== 'string' || serverId.trim() === '') {
+      logger.warn('Invalid server ID provided to getUserData', { serverId });
+      return null;
+    }
+
+    // Sanitize inputs
+    const sanitizedUserId = userId.replace(/[^\w-]/g, '');
+    const sanitizedServerId = serverId.replace(/[^\w-]/g, '');
+
+    if (sanitizedUserId !== userId || sanitizedServerId !== serverId) {
+      logger.warn('IDs contained invalid characters', {
+        originalUserId: userId,
+        sanitizedUserId,
+        originalServerId: serverId,
+        sanitizedServerId
+      });
+    }
+
     // Check cache first
-    const cacheKey = `user:${userId}:${serverId}`;
+    const cacheKey = `user:${sanitizedUserId}:${sanitizedServerId}`;
     const cached = userCache.get(cacheKey);
     if (cached) {
       return cached;
@@ -488,17 +826,37 @@ async function getUserData(userId, serverId) {
     const row = await dbAsync.getPrepared(
       'getUserData',
       'SELECT * FROM user_data WHERE user_id = ? AND server_id = ?',
-      [userId, serverId]
+      [sanitizedUserId, sanitizedServerId]
     );
 
     // Cache the result if found
     if (row) {
+      // Validate date fields
+      if (row.exempt_until && !(row.exempt_until instanceof Date) && isNaN(new Date(row.exempt_until).getTime())) {
+        row.exempt_until = null;
+      }
+
+      if (row.last_violation_date && !(row.last_violation_date instanceof Date) &&
+        isNaN(new Date(row.last_violation_date).getTime())) {
+        row.last_violation_date = null;
+      }
+
+      // Ensure numeric fields are valid
+      row.recent_violations = Number.isInteger(row.recent_violations) && row.recent_violations >= 0 ?
+        row.recent_violations : 0;
+      row.total_violations = Number.isInteger(row.total_violations) && row.total_violations >= 0 ?
+        row.total_violations : 0;
+
+      // Ensure boolean fields are valid
+      row.is_exempt = Boolean(row.is_exempt);
+      row.is_anonymized = Boolean(row.is_anonymized);
+
       userCache.set(cacheKey, row);
     }
 
     return row;
   } catch (error) {
-    logger.error('Error in getUserData', { error: error.message });
+    logger.error('Error in getUserData', { error: error.message, userId, serverId });
     return null;
   }
 }
@@ -506,15 +864,45 @@ async function getUserData(userId, serverId) {
 // Get violation logs with pagination
 async function getViolationLogs(serverId, options = {}) {
   try {
-    const limit = Math.min(options.limit || 50, 1000);
-    const offset = options.offset || 0;
+    // Input validation
+    if (!serverId || typeof serverId !== 'string' || serverId.trim() === '') {
+      logger.warn('Invalid server ID provided to getViolationLogs', { serverId });
+      return [];
+    }
 
+    // Sanitize server ID
+    const sanitizedServerId = serverId.replace(/[^\w-]/g, '');
+    if (sanitizedServerId !== serverId) {
+      logger.warn('Server ID contained invalid characters', {
+        original: serverId,
+        sanitized: sanitizedServerId
+      });
+    }
+
+    // Validate and sanitize options
+    const sanitizedOptions = {
+      limit: typeof options.limit === 'number' && options.limit > 0 ?
+        Math.min(options.limit, 1000) : 50,
+      offset: typeof options.offset === 'number' && options.offset >= 0 ?
+        options.offset : 0
+    };
+
+    // Build query with parameterized values only
     let whereClause = 'WHERE server_id = ?';
-    const params = [serverId];
+    const params = [sanitizedServerId];
 
     if (options.userId) {
+      // Sanitize user ID if provided
+      const sanitizedUserId = String(options.userId).replace(/[^\w-]/g, '');
+      if (sanitizedUserId !== options.userId) {
+        logger.warn('User ID contained invalid characters', {
+          original: options.userId,
+          sanitized: sanitizedUserId
+        });
+      }
+
       whereClause += ' AND user_id = ?';
-      params.push(options.userId);
+      params.push(sanitizedUserId);
     }
 
     if (options.isViolation !== undefined) {
@@ -522,14 +910,27 @@ async function getViolationLogs(serverId, options = {}) {
       params.push(options.isViolation ? 1 : 0);
     }
 
-    params.push(limit, offset);
+    params.push(sanitizedOptions.limit, sanitizedOptions.offset);
 
     const sql = `SELECT * FROM violation_logs ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
 
     const rows = await dbAsync.all(sql, params);
-    return rows || [];
+
+    // Validate returned data
+    return (rows || []).map(row => {
+      // Ensure boolean fields are valid
+      row.is_violation = Boolean(row.is_violation);
+      row.human_reviewed = Boolean(row.human_reviewed);
+
+      // Ensure numeric fields are valid
+      if (typeof row.confidence_score === 'number') {
+        row.confidence_score = Math.max(0, Math.min(1, row.confidence_score));
+      }
+
+      return row;
+    });
   } catch (error) {
-    logger.error('Error in getViolationLogs', { error: error.message });
+    logger.error('Error in getViolationLogs', { error: error.message, serverId });
     return [];
   }
 }
@@ -537,14 +938,28 @@ async function getViolationLogs(serverId, options = {}) {
 // Database health check
 async function checkDatabaseHealth() {
   try {
+    // Check if database and async wrapper are initialized
     if (!db || !dbAsync) {
+      logger.warn('Database health check failed: Database not initialized');
       return false;
     }
 
+    // Execute a simple query to verify database is responsive
     const row = await dbAsync.get('SELECT 1 as health');
-    return row && row.health === 1;
+
+    // Verify the result is as expected
+    const isHealthy = row && row.health === 1;
+
+    if (!isHealthy) {
+      logger.warn('Database health check failed: Unexpected response', { response: row });
+    }
+
+    return isHealthy;
   } catch (error) {
-    logger.error('Database health check failed', { error: error.message });
+    logger.error('Database health check failed', {
+      error: error.message,
+      stack: error.stack
+    });
     return false;
   }
 }
@@ -552,48 +967,118 @@ async function checkDatabaseHealth() {
 // Close database connection
 async function closeDatabase() {
   try {
-    // Clear caches
-    configCache.clear();
-    userCache.clear();
+    logger.info('Closing database connection...');
 
-    // Close async wrapper
-    if (dbAsync) {
-      dbAsync.close();
+    // Clear caches first to prevent any further access
+    if (configCache) {
+      try {
+        configCache.clear();
+        logger.debug('Config cache cleared');
+      } catch (cacheError) {
+        logger.error('Error clearing config cache', { error: cacheError.message });
+      }
     }
 
-    // Close database
+    if (userCache) {
+      try {
+        userCache.clear();
+        logger.debug('User cache cleared');
+      } catch (cacheError) {
+        logger.error('Error clearing user cache', { error: cacheError.message });
+      }
+    }
+
+    // Close async wrapper to finalize prepared statements
+    if (dbAsync) {
+      try {
+        dbAsync.close();
+        logger.debug('Database async wrapper closed');
+      } catch (asyncError) {
+        logger.error('Error closing async database wrapper', { error: asyncError.message });
+      }
+    }
+
+    // Close the actual database connection
     if (db) {
       await new Promise((resolve) => {
         db.close((err) => {
           if (err) {
-            logger.error('Error closing database', { error: err.message });
+            logger.error('Error closing SQLite database', { error: err.message });
           } else {
-            logger.info('Database connection closed');
+            logger.info('SQLite database connection closed successfully');
           }
           resolve();
         });
       });
+    } else {
+      logger.warn('No database connection to close');
     }
 
+    // Clear references
     db = null;
     dbAsync = null;
+
+    logger.info('Database shutdown complete');
   } catch (error) {
-    logger.error('Error closing database', { error: error.message });
+    logger.error('Error during database shutdown', {
+      error: error.message,
+      stack: error.stack
+    });
+
+    // Force clear references even on error
+    db = null;
+    dbAsync = null;
   }
 }
 
 // Cleanup old logs (run periodically)
 async function cleanupOldLogs() {
   try {
-    const retentionDays = parseInt(process.env.LOG_RETENTION_DAYS) || 90;
-    const sql = `DELETE FROM violation_logs WHERE created_at < datetime('now', '-${retentionDays} days')`;
+    // Validate database is available
+    if (!db || !dbAsync) {
+      logger.warn('Cannot cleanup logs: Database not initialized');
+      return;
+    }
 
-    const result = await dbAsync.run(sql);
+    // Get retention period from environment with validation
+    let retentionDays = 90; // Default 90 days
+
+    if (process.env.LOG_RETENTION_DAYS) {
+      const parsedDays = parseInt(process.env.LOG_RETENTION_DAYS, 10);
+      if (!isNaN(parsedDays) && parsedDays > 0) {
+        retentionDays = parsedDays;
+      } else {
+        logger.warn('Invalid LOG_RETENTION_DAYS value, using default', {
+          provided: process.env.LOG_RETENTION_DAYS,
+          default: retentionDays
+        });
+      }
+    }
+
+    logger.info('Running log cleanup', { retentionDays });
+
+    // Use parameterized query for safety
+    const sql = `DELETE FROM violation_logs WHERE created_at < datetime('now', ? || ' days')`;
+    const params = [`-${retentionDays}`];
+
+    const result = await dbAsync.run(sql, params);
+
     if (result.changes > 0) {
-      logger.info(`Cleaned up ${result.changes} old violation logs`);
+      logger.info(`Cleaned up ${result.changes} old violation logs`, { retentionDays });
+    } else {
+      logger.info('No old logs to clean up', { retentionDays });
+    }
+
+    // Optimize database after deletion
+    if (result.changes > 1000) {
+      logger.info('Running VACUUM after large cleanup');
+      await dbAsync.run('VACUUM');
     }
   } catch (error) {
-    logger.error('Error in cleanupOldLogs', { error: error.message });
+    logger.error('Error in cleanupOldLogs', {
+      error: error.message,
+      stack: error.stack
+    });
   }
 }
 

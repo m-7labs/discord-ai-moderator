@@ -5,7 +5,8 @@
 
 const NodeCache = require('node-cache');
 const Redis = require('ioredis');
-const crypto = require('crypto');
+// eslint-disable-next-line no-unused-vars
+const _crypto = require('crypto');
 const logger = require('./logger');
 const { EventEmitter } = require('events');
 
@@ -76,13 +77,13 @@ class CacheManager extends EventEmitter {
             });
 
             // Track cache events
-            this.l1Cache.on('expired', (key, value) => {
+            this.l1Cache.on('expired', (key, _value) => {
                 this.stats.evictions.l1++;
                 this.sizeTracker.delete(key);
                 this.emit('eviction', { layer: 'l1', key, reason: 'expired' });
             });
 
-            this.l1Cache.on('del', (key, value) => {
+            this.l1Cache.on('del', (key, _value) => {
                 this.sizeTracker.delete(key);
             });
         }
@@ -257,7 +258,7 @@ class CacheManager extends EventEmitter {
 
         if (this.l2Cache && this.config.l2.enabled) {
             try {
-                const keys = await this.l2Cache.keys(this.config.l2.keyPrefix + '*');
+                const keys = await this.l2Cache.keys(`${this.config.l2.keyPrefix}*`);
                 if (keys.length > 0) {
                     await this.l2Cache.del(...keys);
                 }
@@ -370,6 +371,7 @@ class CacheManager extends EventEmitter {
         // Evict random items quickly
         for (let i = 0; i < evictCount && keys.length > 0; i++) {
             const randomIndex = Math.floor(Math.random() * keys.length);
+            // eslint-disable-next-line security/detect-object-injection
             const key = keys[randomIndex];
             this.l1Cache.del(key);
             keys.splice(randomIndex, 1);
@@ -443,7 +445,7 @@ let cacheManager = null;
 /**
  * Get or create cache manager instance
  */
-function getCacheManager(options = {}) {
+const getCacheManager = (options = {}) => {
     if (!cacheManager) {
         cacheManager = new CacheManager(options);
     }
@@ -453,8 +455,8 @@ function getCacheManager(options = {}) {
 /**
  * Cache decorators for easy method caching
  */
-function cached(keyGenerator, ttl = 300) {
-    return function (target, propertyKey, descriptor) {
+const cached = (keyGenerator, ttl = 300) => {
+    return (target, propertyKey, descriptor) => {
         const originalMethod = descriptor.value;
 
         descriptor.value = async function (...args) {

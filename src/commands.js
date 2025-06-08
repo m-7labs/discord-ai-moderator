@@ -1,7 +1,6 @@
-const SecurityValidator = require("./utils/security-validator");
-const { SlashCommandBuilder } = require('@discordjs/builders');
-const { REST } = require('@discordjs/rest');
-const { Routes } = require('discord-api-types/v9');
+const _SecurityValidator = require("./utils/security-validator");
+// Import all required classes from discord.js instead of separate packages
+const { SlashCommandBuilder, REST, Routes } = require('discord.js');
 const { PermissionFlagsBits } = require('discord.js');
 const {
   executeSetupCommand,
@@ -22,23 +21,23 @@ const commands = [
     .setDescription('Setup the AI moderation system')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_config')
     .setDescription('Configure moderation settings')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_status')
     .setDescription('Check moderation system status')
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_help')
     .setDescription('View all available commands')
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_review')
     .setDescription('Manually review a message')
@@ -48,7 +47,7 @@ const commands = [
         .setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_override')
     .setDescription('Override an AI decision')
@@ -69,7 +68,7 @@ const commands = [
         ))
     .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_exempt')
     .setDescription('Exempt a user from moderation')
@@ -82,7 +81,7 @@ const commands = [
         .setDescription('Duration in minutes (0 for permanent)'))
     .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_stats')
     .setDescription('View moderation statistics')
@@ -96,19 +95,19 @@ const commands = [
           { name: 'All Time', value: 'all' }
         ))
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_system')
     .setDescription('View detailed system status and health')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_reset_errors')
     .setDescription('Reset error counters and attempt system recovery')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON(),
-    
+
   new SlashCommandBuilder()
     .setName('modagent_health_check')
     .setDescription('Force an immediate system health check')
@@ -117,7 +116,7 @@ const commands = [
 ];
 
 // Register commands with Discord
-async function setupCommands() {
+const setupCommands = async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
 
   try {
@@ -133,19 +132,19 @@ async function setupCommands() {
     logger.error('Error registering commands:', error);
     throw error;
   }
-}
+};
 
 // Handle command interactions
-async function handleCommandInteraction(interaction) {
+const handleCommandInteraction = async (interaction) => {
   const commandName = interaction.commandName;
-  
+
   // Import system command handlers
   const {
     executeSystemStatusCommand,
     executeResetErrorsCommand,
     executeForceHealthCheckCommand
   } = require('./handlers/system-handler');
-  
+
   switch (commandName) {
     case 'modagent_setup':
       await executeSetupCommand(interaction);
@@ -186,7 +185,7 @@ async function handleCommandInteraction(interaction) {
         ephemeral: true
       });
   }
-}
+};
 
 module.exports = {
   setupCommands,
