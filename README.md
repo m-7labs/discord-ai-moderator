@@ -109,6 +109,40 @@ An advanced Discord bot that uses artificial intelligence to moderate server con
 
 For detailed installation instructions, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md).
 
+### Docker Deployment
+
+The application can be easily deployed using Docker:
+
+1. Using Docker Compose (recommended):
+   ```bash
+   # Start all services
+   docker-compose up -d
+   
+   # View logs
+   docker-compose logs -f
+   
+   # Stop all services
+   docker-compose down
+   ```
+
+2. Using Docker Run:
+   ```bash
+   # Build the image
+   docker build -t discord-ai-moderator .
+   
+   # Run the container
+   docker run -d --name discord-ai-moderator --env-file .env -p 3000:3000 -p 8080:8080 -v $(pwd)/data:/app/data discord-ai-moderator
+   ```
+
+The Docker deployment includes:
+- Non-root user for security
+- Health checks for all services
+- Resource limits and monitoring
+- Volume mounts for persistent data
+- Support for MongoDB, PostgreSQL, and Redis
+
+For detailed Docker deployment instructions, see [INSTALLATION_GUIDE.md#docker-deployment](INSTALLATION_GUIDE.md#docker-deployment).
+
 ## Configuration
 
 ### Basic Configuration
@@ -292,6 +326,23 @@ rotateSession(req, res, (err) => {
   req.session.userId = user.id;
 });
 ```
+
+## Health Monitoring
+
+The application includes comprehensive health monitoring:
+
+```bash
+# Run health check
+npm run healthcheck
+```
+
+The health check verifies:
+- Application status
+- Database connectivity
+- Redis connectivity
+- System resources
+- Worker thread pool status
+- Cache performance
 
 ## Contributing
 

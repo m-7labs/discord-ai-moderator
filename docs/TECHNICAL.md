@@ -279,7 +279,78 @@ The application validates configuration:
 - **Dependency Checking**: Verifies configuration dependencies
 - **Fallback Values**: Provides sensible defaults
 
-## Deployment Considerations
+## Deployment Architecture
+
+### Docker Deployment
+
+The application is designed for containerized deployment using Docker:
+
+#### Container Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                Docker Compose Environment                   │
+│                                                             │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐   │
+│  │  App          │  │  MongoDB      │  │  Redis        │   │
+│  │  Container    │  │  Container    │  │  Container    │   │
+│  └───────────────┘  └───────────────┘  └───────────────┘   │
+│         │                  │                  │            │
+│         └──────────────────┼──────────────────┘            │
+│                            │                               │
+│  ┌───────────────┐  ┌───────────────┐                      │
+│  │  PostgreSQL   │  │  Volumes      │                      │
+│  │  Container    │  │  (Persistent) │                      │
+│  └───────────────┘  └───────────────┘                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Container Components
+
+1. **App Container**:
+   - Node.js application with all dependencies
+   - Non-root user for security
+   - Health check endpoint
+   - Resource limits and monitoring
+   - Environment variable configuration
+
+2. **MongoDB Container**:
+   - Document database for flexible data storage
+   - Persistent volume for data
+   - Health check configuration
+   - Authentication and security settings
+
+3. **Redis Container**:
+   - In-memory cache and session store
+   - Persistent volume for data
+   - Password protection
+   - Health check configuration
+
+4. **PostgreSQL Container** (optional):
+   - Relational database for structured data
+   - Persistent volume for data
+   - User authentication
+   - Health check configuration
+
+#### Security Features
+
+The Docker deployment includes several security enhancements:
+
+- **Non-root User**: The application runs as a non-root user inside the container
+- **Resource Limits**: CPU and memory limits prevent resource exhaustion
+- **Health Checks**: Regular health checks ensure the application is functioning properly
+- **Volume Isolation**: Sensitive data is stored in isolated volumes
+- **Dependency Scanning**: The build process includes security scanning for dependencies
+- **Minimal Base Image**: Alpine-based image reduces attack surface
+
+#### Scaling Considerations
+
+The Docker deployment supports various scaling strategies:
+
+- **Horizontal Scaling**: Multiple app containers behind a load balancer
+- **Database Replication**: MongoDB or PostgreSQL replication for read scaling
+- **Redis Clustering**: Redis cluster for distributed caching
+- **Stateless Design**: Application designed for stateless horizontal scaling
 
 ### Production Environment
 

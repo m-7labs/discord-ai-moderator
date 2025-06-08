@@ -1,4 +1,4 @@
-version: '3'
+version: '3.8'
 
 services:
   app:
@@ -9,14 +9,46 @@ services:
     restart: unless-stopped
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
+      - "${SECURITY_WS_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./.env:/app/.env
+      - ./config:/app/config
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=${NODE_ENV:-production}
+      - WORKER_THREAD_POOL_SIZE=${WORKER_THREAD_POOL_SIZE:-4}
+      - WORKER_THREAD_POOL_MIN_SIZE=${WORKER_THREAD_POOL_MIN_SIZE:-2}
+      - WORKER_THREAD_POOL_MAX_SIZE=${WORKER_THREAD_POOL_MAX_SIZE:-8}
+      - ENABLE_TIERED_CACHE=${ENABLE_TIERED_CACHE:-true}
+      - ENABLE_ADAPTIVE_QUERY_OPTIMIZER=${ENABLE_ADAPTIVE_QUERY_OPTIMIZER:-true}
+      - ENABLE_CSP=${ENABLE_CSP:-true}
+      - ENABLE_IP_REPUTATION=${ENABLE_IP_REPUTATION:-true}
+      - DB_TYPE=${DB_TYPE:-MONGODB}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017/discord-ai-moderator}
+      - POSTGRES_HOST=${DB_TYPE:-MONGODB} == "POSTGRESQL" ? "postgres": ""
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    healthcheck:
+      test: [ "CMD", "node", "scripts/healthcheck.js" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   mongodb:
     image: mongo:6
@@ -25,7 +57,69 @@ services:
     volumes:
       - mongodb_data:/data/db
     ports:
-      - "27017:27017"
+      - "${MONGODB_PORT:-27017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGODB_USER:-}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD:-}
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: discord-ai-moderator-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: discord-ai-moderator-postgres
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-discord_ai_mod}
+      - POSTGRES_USER=${POSTGRES_USER:-discord_ai_mod_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-discord_ai_mod_user} -d ${POSTGRES_DB:-discord_ai_mod}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    profiles:
+      - postgres
 
 volumes:
   mongodb_data:
+  redis_data:
+  postgres_data:

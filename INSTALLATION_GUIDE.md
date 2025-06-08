@@ -331,7 +331,7 @@ AZURE_OPENAI_API_VERSION=2023-05-15
 ```env
 AI_PROVIDER=anthropic
 ANTHROPIC_API_KEY=your_anthropic_api_key
-ANTHROPIC_MODEL=claude-2
+ANTHROPIC_MODEL=claude-3-sonnet
 ANTHROPIC_MAX_TOKENS=2048
 ```
 
@@ -509,12 +509,12 @@ pm2 logs discord-ai-moderator
 The application includes a diagnostic script:
 
 ```bash
-npm run diagnostics
+npm run healthcheck
 ```
 
 This will check:
 - Node.js version
-- Database connectivity
+- Database connectivity (MongoDB and PostgreSQL)
 - Redis connectivity
 - Discord API connectivity
 - AI provider connectivity
@@ -567,7 +567,162 @@ pm2 restart discord-ai-moderator
 
 ## Docker Deployment
 
-The Discord AI Moderator can be deployed using Docker:
+The Discord AI Moderator can be deployed using Docker with enhanced security, performance, and monitoring features:
+
+### Using Docker Compose (Recommended)
+
+1. Create a `.env` file as described in the Configuration section
+
+2. Use the provided `docker-compose.yml` file or create one:
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-ai-moderator
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${SECURITY_WS_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - WORKER_THREAD_POOL_SIZE=${WORKER_THREAD_POOL_SIZE:-4}
+      - WORKER_THREAD_POOL_MIN_SIZE=${WORKER_THREAD_POOL_MIN_SIZE:-2}
+      - WORKER_THREAD_POOL_MAX_SIZE=${WORKER_THREAD_POOL_MAX_SIZE:-8}
+      - ENABLE_TIERED_CACHE=${ENABLE_TIERED_CACHE:-true}
+      - ENABLE_ADAPTIVE_QUERY_OPTIMIZER=${ENABLE_ADAPTIVE_QUERY_OPTIMIZER:-true}
+      - ENABLE_CSP=${ENABLE_CSP:-true}
+      - ENABLE_IP_REPUTATION=${ENABLE_IP_REPUTATION:-true}
+      - DB_TYPE=${DB_TYPE:-MONGODB}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017/discord-ai-moderator}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  mongodb:
+    image: mongo:6
+    container_name: discord-ai-moderator-db
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGODB_USER:-}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD:-}
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: discord-ai-moderator-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: discord-ai-moderator-postgres
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-discord_ai_mod}
+      - POSTGRES_USER=${POSTGRES_USER:-discord_ai_mod_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-discord_ai_mod_user} -d ${POSTGRES_DB:-discord_ai_mod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    profiles:
+      - postgres
+
+volumes:
+  mongodb_data:
+  redis_data:
+  postgres_data:
+```
+
+3. Start the Docker Compose deployment:
+
+```bash
+docker-compose up -d
+```
+
+4. Check the logs:
+
+```bash
+docker-compose logs -f
+```
+
+5. Check the health status:
+
+```bash
+docker ps
+```
+
+### Using Docker Run
+
+If you prefer to run containers individually:
 
 1. Build the Docker image:
 
@@ -575,61 +730,60 @@ The Discord AI Moderator can be deployed using Docker:
 docker build -t discord-ai-moderator .
 ```
 
-2. Create a `.env` file as described in the Configuration section
+2. Create a network for the containers:
 
-3. Run the container:
+```bash
+docker network create discord-ai-mod-network
+```
+
+3. Run MongoDB:
+
+```bash
+docker run -d \
+  --name discord-ai-moderator-db \
+  --network discord-ai-mod-network \
+  -v mongodb_data:/data/db \
+  -p 27017:27017 \
+  mongo:6
+```
+
+4. Run Redis:
+
+```bash
+docker run -d \
+  --name discord-ai-moderator-redis \
+  --network discord-ai-mod-network \
+  -v redis_data:/data \
+  -p 6379:6379 \
+  redis:7-alpine redis-server --appendonly yes --requirepass your_redis_password
+```
+
+5. Run the application:
 
 ```bash
 docker run -d \
   --name discord-ai-moderator \
+  --network discord-ai-mod-network \
   --env-file .env \
+  -e REDIS_HOST=discord-ai-moderator-redis \
+  -e MONGODB_URI=mongodb://discord-ai-moderator-db:27017/discord-ai-moderator \
   -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/config:/app/config \
+  -p 3000:3000 \
+  -p 8080:8080 \
   discord-ai-moderator
 ```
 
-4. For Docker Compose deployment, create a `docker-compose.yml` file:
+### Docker Security Considerations
 
-```yaml
-version: '3'
+The Docker deployment includes several security enhancements:
 
-services:
-  app:
-    build: .
-    restart: always
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      - postgres
-      - redis
-
-  postgres:
-    image: postgres:14
-    restart: always
-    environment:
-      POSTGRES_DB: discord_ai_mod
-      POSTGRES_USER: discord_ai_mod_user
-      POSTGRES_PASSWORD: your_password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    restart: always
-    command: redis-server --requirepass your_redis_password
-    volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
-```
-
-5. Start the Docker Compose deployment:
-
-```bash
-docker-compose up -d
-```
+1. **Non-root User**: The application runs as a non-root user inside the container
+2. **Resource Limits**: CPU and memory limits prevent resource exhaustion
+3. **Health Checks**: Regular health checks ensure the application is functioning properly
+4. **Volume Isolation**: Sensitive data is stored in isolated volumes
+5. **Dependency Scanning**: The build process includes security scanning for dependencies
 
 ## Additional Resources
 
